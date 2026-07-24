@@ -1,13 +1,20 @@
 #!/bin/bash
 set -e
 
+# MACOS_ONLY=1  Build only the macOS arm64 slice (for CI / CodeQL). Skips iOS
+#               targets, x86_64 lipo, and license generation.
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 RUST_DIR="$SCRIPT_DIR"
 OUTPUT_DIR="$PROJECT_DIR/MQTeeCore"
 XCFRAMEWORK_DIR="$OUTPUT_DIR/mqtee_core.xcframework"
+MACOS_ONLY="${MACOS_ONLY:-0}"
 
 echo "=== MQTee Core Rust Library Builder ==="
+if [ "$MACOS_ONLY" = "1" ]; then
+    echo "Mode: MACOS_ONLY (arm64 darwin, for CI/CodeQL)"
+fi
 echo ""
 
 # Check for Rust installation
@@ -27,64 +34,70 @@ echo ""
 
 cd "$RUST_DIR"
 
-# Ensure all targets are installed
+# Ensure build targets are installed
 echo "Ensuring build targets are installed..."
 rustup target add aarch64-apple-darwin 2>/dev/null || true
-rustup target add x86_64-apple-darwin 2>/dev/null || true
-rustup target add aarch64-apple-ios 2>/dev/null || true
-rustup target add aarch64-apple-ios-sim 2>/dev/null || true
-rustup target add x86_64-apple-ios 2>/dev/null || true
+if [ "$MACOS_ONLY" != "1" ]; then
+    rustup target add x86_64-apple-darwin 2>/dev/null || true
+    rustup target add aarch64-apple-ios 2>/dev/null || true
+    rustup target add aarch64-apple-ios-sim 2>/dev/null || true
+    rustup target add x86_64-apple-ios 2>/dev/null || true
+fi
 
 # uniffi-bindgen is built from local binary target (uniffi-bindgen.rs)
 
-# Build for macOS (both architectures)
+# Build for macOS arm64 (always)
 echo ""
 echo "Building for macOS arm64..."
 cargo build --release --target aarch64-apple-darwin
 
-echo ""
-echo "Building for macOS x86_64..."
-cargo build --release --target x86_64-apple-darwin
+if [ "$MACOS_ONLY" != "1" ]; then
+    echo ""
+    echo "Building for macOS x86_64..."
+    cargo build --release --target x86_64-apple-darwin
 
-# Build for iOS device
-echo ""
-echo "Building for iOS arm64..."
-cargo build --release --target aarch64-apple-ios
+    echo ""
+    echo "Building for iOS arm64..."
+    cargo build --release --target aarch64-apple-ios
 
-# Build for iOS simulator (both architectures)
-echo ""
-echo "Building for iOS Simulator arm64..."
-cargo build --release --target aarch64-apple-ios-sim
+    echo ""
+    echo "Building for iOS Simulator arm64..."
+    cargo build --release --target aarch64-apple-ios-sim
 
-echo ""
-echo "Building for iOS Simulator x86_64..."
-cargo build --release --target x86_64-apple-ios
+    echo ""
+    echo "Building for iOS Simulator x86_64..."
+    cargo build --release --target x86_64-apple-ios
+fi
 
 # Create output directories
 mkdir -p "$OUTPUT_DIR/Sources"
 mkdir -p "$OUTPUT_DIR/Headers"
 
-# Create macOS universal binary
+# Create macOS library (universal or arm64-only)
 echo ""
-echo "Creating macOS universal binary..."
+echo "Creating macOS library..."
 MACOS_LIB_DIR="$OUTPUT_DIR/lib-macos"
 mkdir -p "$MACOS_LIB_DIR"
-lipo -create \
-    target/aarch64-apple-darwin/release/libmqtee_core.a \
-    target/x86_64-apple-darwin/release/libmqtee_core.a \
-    -output "$MACOS_LIB_DIR/libmqtee_core.a"
+if [ "$MACOS_ONLY" = "1" ]; then
+    cp target/aarch64-apple-darwin/release/libmqtee_core.a "$MACOS_LIB_DIR/libmqtee_core.a"
+else
+    lipo -create \
+        target/aarch64-apple-darwin/release/libmqtee_core.a \
+        target/x86_64-apple-darwin/release/libmqtee_core.a \
+        -output "$MACOS_LIB_DIR/libmqtee_core.a"
+fi
 
-# Create iOS simulator universal binary
-echo "Creating iOS Simulator universal binary..."
-IOS_SIM_LIB_DIR="$OUTPUT_DIR/lib-ios-sim"
-mkdir -p "$IOS_SIM_LIB_DIR"
-lipo -create \
-    target/aarch64-apple-ios-sim/release/libmqtee_core.a \
-    target/x86_64-apple-ios/release/libmqtee_core.a \
-    -output "$IOS_SIM_LIB_DIR/libmqtee_core.a"
+if [ "$MACOS_ONLY" != "1" ]; then
+    echo "Creating iOS Simulator universal binary..."
+    IOS_SIM_LIB_DIR="$OUTPUT_DIR/lib-ios-sim"
+    mkdir -p "$IOS_SIM_LIB_DIR"
+    lipo -create \
+        target/aarch64-apple-ios-sim/release/libmqtee_core.a \
+        target/x86_64-apple-ios/release/libmqtee_core.a \
+        -output "$IOS_SIM_LIB_DIR/libmqtee_core.a"
 
-# iOS device binary (single arch, no lipo needed)
-IOS_DEVICE_LIB="target/aarch64-apple-ios/release/libmqtee_core.a"
+    IOS_DEVICE_LIB="target/aarch64-apple-ios/release/libmqtee_core.a"
+fi
 
 # Generate Swift bindings using uniffi-bindgen
 echo ""
@@ -111,23 +124,36 @@ EOF
 echo ""
 echo "Creating XCFramework..."
 rm -rf "$XCFRAMEWORK_DIR"
-xcodebuild -create-xcframework \
-    -library "$MACOS_LIB_DIR/libmqtee_core.a" \
-    -headers "$OUTPUT_DIR/Headers" \
-    -library "$IOS_DEVICE_LIB" \
-    -headers "$OUTPUT_DIR/Headers" \
-    -library "$IOS_SIM_LIB_DIR/libmqtee_core.a" \
-    -headers "$OUTPUT_DIR/Headers" \
-    -output "$XCFRAMEWORK_DIR"
+if [ "$MACOS_ONLY" = "1" ]; then
+    xcodebuild -create-xcframework \
+        -library "$MACOS_LIB_DIR/libmqtee_core.a" \
+        -headers "$OUTPUT_DIR/Headers" \
+        -output "$XCFRAMEWORK_DIR"
+else
+    xcodebuild -create-xcframework \
+        -library "$MACOS_LIB_DIR/libmqtee_core.a" \
+        -headers "$OUTPUT_DIR/Headers" \
+        -library "$IOS_DEVICE_LIB" \
+        -headers "$OUTPUT_DIR/Headers" \
+        -library "$IOS_SIM_LIB_DIR/libmqtee_core.a" \
+        -headers "$OUTPUT_DIR/Headers" \
+        -output "$XCFRAMEWORK_DIR"
+fi
 
 # Clean up temporary directories (headers are now inside the xcframework)
-rm -rf "$MACOS_LIB_DIR" "$IOS_SIM_LIB_DIR" "$OUTPUT_DIR/Headers"
+rm -rf "$MACOS_LIB_DIR" "${IOS_SIM_LIB_DIR:-}" "$OUTPUT_DIR/Headers"
 
-# Generate license bundle for App Store attribution
-echo ""
-echo "Generating license bundle..."
-mkdir -p "$PROJECT_DIR/mqtee/Resources"
-cargo bundle-licenses --format json --output "$PROJECT_DIR/mqtee/Resources/licenses.json"
+# Generate license bundle for App Store attribution (skip in MACOS_ONLY CI builds)
+if [ "$MACOS_ONLY" != "1" ]; then
+    echo ""
+    echo "Generating license bundle..."
+    mkdir -p "$PROJECT_DIR/mqtee/Resources"
+    if command -v cargo-bundle-licenses &> /dev/null || cargo bundle-licenses --help &> /dev/null; then
+        cargo bundle-licenses --format json --output "$PROJECT_DIR/mqtee/Resources/licenses.json"
+    else
+        echo "Warning: cargo-bundle-licenses not installed; skipping license bundle."
+    fi
+fi
 
 echo ""
 echo "=== Build Complete ==="
