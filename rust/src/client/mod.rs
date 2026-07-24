@@ -11,12 +11,11 @@ use tracing::{debug, error, info};
 
 use crate::error::MqttError;
 use crate::types::{
-  ConnectionConfig, ConnectionEvent, MqttEventHandler, MqttVersion, QosLevel, SubscriptionRequest,
-  UserProperty,
+  ConnectionConfig, ConnectionEvent, MqttEventHandler, MqttVersion, QosLevel, SubscriptionRequest, UserProperty,
 };
 
-use self::v311::{create_v311_client, handle_v311_event};
 use self::v5::{create_v5_client, handle_v5_event};
+use self::v311::{create_v311_client, handle_v311_event};
 
 pub enum Command {
   Connect,
@@ -58,10 +57,7 @@ pub struct MqttClient {
 #[uniffi::export]
 impl MqttClient {
   #[uniffi::constructor]
-  pub fn new(
-    config: ConnectionConfig,
-    handler: Box<dyn MqttEventHandler>,
-  ) -> Result<Arc<Self>, MqttError> {
+  pub fn new(config: ConnectionConfig, handler: Box<dyn MqttEventHandler>) -> Result<Arc<Self>, MqttError> {
     let runtime = Runtime::new().map_err(|e| MqttError::InternalError(e.to_string()))?;
 
     let handler: Arc<dyn MqttEventHandler> = Arc::from(handler);
@@ -84,13 +80,15 @@ impl MqttClient {
   }
 
   pub fn connect(&self) -> Result<(), MqttError> {
-    self.command_tx
+    self
+      .command_tx
       .try_send(Command::Connect)
       .map_err(|e| MqttError::InternalError(format!("Command channel error: {}", e)))
   }
 
   pub fn disconnect(&self) -> Result<(), MqttError> {
-    self.command_tx
+    self
+      .command_tx
       .try_send(Command::Disconnect)
       .map_err(|e| MqttError::InternalError(format!("Command channel error: {}", e)))
   }
@@ -100,7 +98,8 @@ impl MqttClient {
       return Err(MqttError::NotConnected);
     }
 
-    self.command_tx
+    self
+      .command_tx
       .try_send(Command::Subscribe(subscriptions))
       .map_err(|e| MqttError::InternalError(format!("Command channel error: {}", e)))
   }
@@ -110,7 +109,8 @@ impl MqttClient {
       return Err(MqttError::NotConnected);
     }
 
-    self.command_tx
+    self
+      .command_tx
       .try_send(Command::Unsubscribe(topics))
       .map_err(|e| MqttError::InternalError(format!("Command channel error: {}", e)))
   }
@@ -133,7 +133,8 @@ impl MqttClient {
       return Err(MqttError::NotConnected);
     }
 
-    self.command_tx
+    self
+      .command_tx
       .try_send(Command::Publish {
         topic,
         payload,
@@ -259,9 +260,7 @@ async fn handle_command(
         }
         Err(e) => {
           error!("Failed to create MQTT client: {}", e);
-          handler.on_event(ConnectionEvent::Error {
-            error: e.to_string(),
-          });
+          handler.on_event(ConnectionEvent::Error { error: e.to_string() });
         }
       }
     }
@@ -375,17 +374,15 @@ async fn handle_command(
       payload_format_indicator,
       user_properties,
     } => match inner {
-      Some(ClientInner::V311 { client, .. }) => {
-        match client.publish(&topic, qos.into(), retain, payload).await {
-          Ok(_) => debug!("Published to {}", topic),
-          Err(e) => {
-            error!("Failed to publish to {}: {}", topic, e);
-            handler.on_event(ConnectionEvent::Error {
-              error: format!("Publish failed: {}", e),
-            });
-          }
+      Some(ClientInner::V311 { client, .. }) => match client.publish(&topic, qos.into(), retain, payload).await {
+        Ok(_) => debug!("Published to {}", topic),
+        Err(e) => {
+          error!("Failed to publish to {}: {}", topic, e);
+          handler.on_event(ConnectionEvent::Error {
+            error: format!("Publish failed: {}", e),
+          });
         }
-      }
+      },
       Some(ClientInner::V5 { client, .. }) => {
         let has_props = content_type.is_some()
           || response_topic.is_some()
@@ -403,10 +400,7 @@ async fn handle_command(
             correlation_data: correlation_data.map(Into::into),
             message_expiry_interval,
             payload_format_indicator,
-            user_properties: user_properties
-              .into_iter()
-              .map(|p| (p.key, p.value))
-              .collect(),
+            user_properties: user_properties.into_iter().map(|p| (p.key, p.value)).collect(),
             ..Default::default()
           };
 

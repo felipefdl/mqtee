@@ -7,10 +7,7 @@ use super::tls::create_tls_config;
 use crate::error::MqttError;
 use crate::types::{ConnectionConfig, ConnectionEvent, MqttEventHandler, MqttMessage};
 
-pub(super) fn create_v311_client(
-  config: &ConnectionConfig,
-  max_packet_size: usize,
-) -> Result<ClientInner, MqttError> {
+pub(super) fn create_v311_client(config: &ConnectionConfig, max_packet_size: usize) -> Result<ClientInner, MqttError> {
   let mut mqtt_options = rumqttc::MqttOptions::new(&config.client_id, &config.host, config.port);
   mqtt_options.set_keep_alive(Duration::from_secs(config.keep_alive_secs as u64));
   mqtt_options.set_clean_session(config.clean_session);
@@ -101,29 +98,19 @@ pub(super) fn handle_v311_event(
         });
       }
       rumqttc::Packet::UnsubAck(ack) => {
-        handler.on_event(ConnectionEvent::UnsubscribeAck {
-          packet_id: ack.pkid,
-        });
+        handler.on_event(ConnectionEvent::UnsubscribeAck { packet_id: ack.pkid });
       }
       rumqttc::Packet::PubAck(ack) => {
-        handler.on_event(ConnectionEvent::PublishAck {
-          packet_id: ack.pkid,
-        });
+        handler.on_event(ConnectionEvent::PublishAck { packet_id: ack.pkid });
       }
       rumqttc::Packet::PubRec(ack) => {
-        handler.on_event(ConnectionEvent::PubRecReceived {
-          packet_id: ack.pkid,
-        });
+        handler.on_event(ConnectionEvent::PubRecReceived { packet_id: ack.pkid });
       }
       rumqttc::Packet::PubRel(ack) => {
-        handler.on_event(ConnectionEvent::PubRelReceived {
-          packet_id: ack.pkid,
-        });
+        handler.on_event(ConnectionEvent::PubRelReceived { packet_id: ack.pkid });
       }
       rumqttc::Packet::PubComp(ack) => {
-        handler.on_event(ConnectionEvent::PubCompReceived {
-          packet_id: ack.pkid,
-        });
+        handler.on_event(ConnectionEvent::PubCompReceived { packet_id: ack.pkid });
       }
       rumqttc::Packet::PingResp => {
         handler.on_event(ConnectionEvent::PingResponseReceived);
@@ -144,10 +131,7 @@ pub(super) fn handle_v311_event(
   }
 }
 
-pub(super) fn handle_v311_outgoing(
-  outgoing: rumqttc::Outgoing,
-  handler: &Arc<dyn MqttEventHandler + Send + Sync>,
-) {
+pub(super) fn handle_v311_outgoing(outgoing: rumqttc::Outgoing, handler: &Arc<dyn MqttEventHandler + Send + Sync>) {
   match outgoing {
     rumqttc::Outgoing::Publish(id) => {
       handler.on_event(ConnectionEvent::PublishSent { packet_id: id });

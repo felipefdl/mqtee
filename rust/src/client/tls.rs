@@ -34,9 +34,7 @@ pub(super) fn create_tls_config(config: &ConnectionConfig) -> Result<rumqttc::Tl
       for cert_result in certs {
         match cert_result {
           Ok(cert) => {
-            root_store
-              .add(cert)
-              .map_err(|e| MqttError::TlsError(e.to_string()))?;
+            root_store.add(cert).map_err(|e| MqttError::TlsError(e.to_string()))?;
           }
           Err(e) => {
             warn!("Skipping unparseable certificate in chain: {}", e);
@@ -64,13 +62,7 @@ pub(super) fn create_tls_config(config: &ConnectionConfig) -> Result<rumqttc::Tl
 
 fn parse_client_cert_key(
   config: &ConnectionConfig,
-) -> Result<
-  Option<(
-    Vec<CertificateDer<'static>>,
-    rustls::pki_types::PrivateKeyDer<'static>,
-  )>,
-  MqttError,
-> {
+) -> Result<Option<(Vec<CertificateDer<'static>>, rustls::pki_types::PrivateKeyDer<'static>)>, MqttError> {
   match (&config.client_certificate, &config.client_key) {
     (Some(client_cert), Some(client_key)) => {
       let mut cert_reader = BufReader::new(client_cert.as_slice());

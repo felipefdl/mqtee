@@ -8,16 +8,10 @@ use super::ClientInner;
 use super::tls::create_tls_config;
 use super::v311::handle_v311_outgoing;
 use crate::error::MqttError;
-use crate::types::{
-  ConnectionConfig, ConnectionEvent, LastWillConfig, MqttEventHandler, MqttMessage, UserProperty,
-};
+use crate::types::{ConnectionConfig, ConnectionEvent, LastWillConfig, MqttEventHandler, MqttMessage, UserProperty};
 
-pub(super) fn create_v5_client(
-  config: &ConnectionConfig,
-  max_packet_size: usize,
-) -> Result<ClientInner, MqttError> {
-  let mut mqtt_options =
-    rumqttc::v5::MqttOptions::new(&config.client_id, &config.host, config.port);
+pub(super) fn create_v5_client(config: &ConnectionConfig, max_packet_size: usize) -> Result<ClientInner, MqttError> {
+  let mut mqtt_options = rumqttc::v5::MqttOptions::new(&config.client_id, &config.host, config.port);
   mqtt_options.set_keep_alive(Duration::from_secs(config.keep_alive_secs as u64));
   mqtt_options.set_clean_start(config.clean_session);
   mqtt_options.set_max_packet_size(Some(max_packet_size as u32));
@@ -176,10 +170,7 @@ pub(super) fn handle_v5_event(
           .collect::<Vec<_>>()
           .join(", ");
 
-        let reason_detail = ack
-          .properties
-          .as_ref()
-          .and_then(|p| p.reason_string.clone());
+        let reason_detail = ack.properties.as_ref().and_then(|p| p.reason_string.clone());
 
         handler.on_event(ConnectionEvent::SubscribeAck {
           packet_id: ack.pkid,
@@ -189,30 +180,20 @@ pub(super) fn handle_v5_event(
       }
 
       v5packets::Packet::UnsubAck(ack) => {
-        handler.on_event(ConnectionEvent::UnsubscribeAck {
-          packet_id: ack.pkid,
-        });
+        handler.on_event(ConnectionEvent::UnsubscribeAck { packet_id: ack.pkid });
       }
 
       v5packets::Packet::PubAck(ack) => {
-        handler.on_event(ConnectionEvent::PublishAck {
-          packet_id: ack.pkid,
-        });
+        handler.on_event(ConnectionEvent::PublishAck { packet_id: ack.pkid });
       }
       v5packets::Packet::PubRec(ack) => {
-        handler.on_event(ConnectionEvent::PubRecReceived {
-          packet_id: ack.pkid,
-        });
+        handler.on_event(ConnectionEvent::PubRecReceived { packet_id: ack.pkid });
       }
       v5packets::Packet::PubRel(ack) => {
-        handler.on_event(ConnectionEvent::PubRelReceived {
-          packet_id: ack.pkid,
-        });
+        handler.on_event(ConnectionEvent::PubRelReceived { packet_id: ack.pkid });
       }
       v5packets::Packet::PubComp(ack) => {
-        handler.on_event(ConnectionEvent::PubCompReceived {
-          packet_id: ack.pkid,
-        });
+        handler.on_event(ConnectionEvent::PubCompReceived { packet_id: ack.pkid });
       }
       v5packets::Packet::PingResp(_) => {
         handler.on_event(ConnectionEvent::PingResponseReceived);
@@ -224,13 +205,8 @@ pub(super) fn handle_v5_event(
           .properties
           .as_ref()
           .and_then(|p| p.reason_string.clone())
-          .unwrap_or_else(|| {
-            format!("Server initiated disconnect: {:?}", disconnect.reason_code)
-          });
-        handler.on_event(ConnectionEvent::Disconnected {
-          reason,
-          reason_code,
-        });
+          .unwrap_or_else(|| format!("Server initiated disconnect: {:?}", disconnect.reason_code));
+        handler.on_event(ConnectionEvent::Disconnected { reason, reason_code });
       }
 
       v5packets::Packet::Connect(..)

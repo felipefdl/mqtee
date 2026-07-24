@@ -2,12 +2,7 @@ use super::*;
 
 #[test]
 fn mqtt_message_new_sets_timestamp_greater_than_zero() {
-  let msg = MqttMessage::new(
-    "test/topic".into(),
-    vec![1, 2, 3],
-    QosLevel::AtMostOnce,
-    false,
-  );
+  let msg = MqttMessage::new("test/topic".into(), vec![1, 2, 3], QosLevel::AtMostOnce, false);
   assert!(msg.timestamp_ms > 0);
   assert_eq!(msg.topic, "test/topic");
   assert_eq!(msg.payload, vec![1, 2, 3]);
@@ -27,14 +22,23 @@ fn mqtt_message_with_v5_properties_sets_all_fields() {
     Some("application/json".into()),
     Some("reply/topic".into()),
     Some(vec![0xDE, 0xAD]),
-    vec![UserProperty { key: "key".into(), value: "value".into() }],
+    vec![UserProperty {
+      key: "key".into(),
+      value: "value".into(),
+    }],
     Some(1),
     Some(3600),
   );
   assert_eq!(msg.content_type.as_deref(), Some("application/json"));
   assert_eq!(msg.response_topic.as_deref(), Some("reply/topic"));
   assert_eq!(msg.correlation_data, Some(vec![0xDE, 0xAD]));
-  assert_eq!(msg.user_properties, vec![UserProperty { key: "key".into(), value: "value".into() }]);
+  assert_eq!(
+    msg.user_properties,
+    vec![UserProperty {
+      key: "key".into(),
+      value: "value".into()
+    }]
+  );
   assert_eq!(msg.payload_format_indicator, Some(1));
   assert_eq!(msg.message_expiry_interval, Some(3600));
 }
@@ -59,18 +63,9 @@ fn qos_level_round_trips_through_rumqttc_v311() {
 #[test]
 fn qos_level_round_trips_through_rumqttc_v5() {
   let cases = [
-    (
-      QosLevel::AtMostOnce,
-      rumqttc::v5::mqttbytes::QoS::AtMostOnce,
-    ),
-    (
-      QosLevel::AtLeastOnce,
-      rumqttc::v5::mqttbytes::QoS::AtLeastOnce,
-    ),
-    (
-      QosLevel::ExactlyOnce,
-      rumqttc::v5::mqttbytes::QoS::ExactlyOnce,
-    ),
+    (QosLevel::AtMostOnce, rumqttc::v5::mqttbytes::QoS::AtMostOnce),
+    (QosLevel::AtLeastOnce, rumqttc::v5::mqttbytes::QoS::AtLeastOnce),
+    (QosLevel::ExactlyOnce, rumqttc::v5::mqttbytes::QoS::ExactlyOnce),
   ];
 
   for (ours, theirs) in cases {
@@ -88,11 +83,7 @@ fn connection_event_disconnected_carries_reason() {
     reason: "broker shutdown".into(),
     reason_code: None,
   };
-  if let ConnectionEvent::Disconnected {
-    reason,
-    reason_code,
-  } = event
-  {
+  if let ConnectionEvent::Disconnected { reason, reason_code } = event {
     assert_eq!(reason, "broker shutdown");
     assert!(reason_code.is_none());
   } else {
@@ -103,9 +94,7 @@ fn connection_event_disconnected_carries_reason() {
 #[test]
 fn connection_event_message_received_carries_message() {
   let msg = MqttMessage::new("t".into(), vec![], QosLevel::AtLeastOnce, true);
-  let event = ConnectionEvent::MessageReceived {
-    message: msg.clone(),
-  };
+  let event = ConnectionEvent::MessageReceived { message: msg.clone() };
   if let ConnectionEvent::MessageReceived { message } = event {
     assert_eq!(message.topic, "t");
     assert_eq!(message.qos, QosLevel::AtLeastOnce);

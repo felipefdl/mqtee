@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use mqtee_core::{MqttMessage, QosLevel, UserProperty};
 
 fn message_construction(c: &mut Criterion) {
@@ -76,7 +76,7 @@ fn data_operations(c: &mut Criterion) {
 
   // Topic string conversion at various sizes
   for size in [10, 50, 200] {
-    group.bench_function(&format!("topic_string_conversion_{size}B"), |b| {
+    group.bench_function(format!("topic_string_conversion_{size}B"), |b| {
       let bytes = vec![b'a'; size];
       b.iter(|| {
         let _ = black_box(String::from_utf8_lossy(black_box(&bytes)));
@@ -86,7 +86,7 @@ fn data_operations(c: &mut Criterion) {
 
   // Payload cloning at various sizes
   for size in [64, 1_000, 10_000, 100_000] {
-    group.bench_function(&format!("payload_clone_{size}B"), |b| {
+    group.bench_function(format!("payload_clone_{size}B"), |b| {
       let payload = vec![0u8; size];
       b.iter(|| {
         let _ = black_box(black_box(&payload).clone());
