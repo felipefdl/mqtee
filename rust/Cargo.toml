@@ -1,0 +1,64 @@
+[package]
+name = "mqtee-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+authors = ["Felipe Lima <felipefdl@mqtee.app>"]
+
+[features]
+test-broker = ["dep:rumqttd"]
+
+[lib]
+crate-type = ["lib", "staticlib"]
+name = "mqtee_core"
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+
+[[bin]]
+name = "test-broker"
+path = "src/bin/test-broker.rs"
+required-features = ["test-broker"]
+
+[dependencies]
+# MQTT client (v5 module for MQTT 5.0 support)
+rumqttc = { version = "0.25", features = ["use-rustls"] }
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+
+# UniFFI for Swift bindings
+uniffi = { version = "0.28", features = ["cli"] }
+
+# Error handling
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Test broker (optional, only for integration tests)
+rumqttd = { version = "0.20", optional = true }
+
+# TLS
+rustls = "0.23"
+rustls-pemfile = "2"
+webpki-roots = "0.26"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "mqtt_benchmarks"
+harness = false
+
+[build-dependencies]
+uniffi = { version = "0.28", features = ["build"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "z"
+strip = true

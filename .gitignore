@@ -1,0 +1,68 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Xcode user-specific files
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+*.moved-aside
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.hmap
+*.ipa
+
+# Xcode and Swift build outputs
+DerivedData/
+build/
+Products/
+*.dSYM
+*.dSYM.zip
+*.xcarchive
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Rust build artifacts
+rust/target/
+
+# MQTeeCore - built XCFramework (regenerated via `just build-rust`)
+MQTeeCore/
+
+# Local agent / editor tooling
+.claude/
+.superpowers/
+.worktrees/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Secrets / credentials
+*.env
+*.env.*
+!*.env.example
+
+# Screenshots and local capture noise
+screenshots/
+.playwright-mcp/
+.firecrawl/
+
+# Fastlane (if added later)
+fastlane/screenshots/
+fastlane/screenshots-mac/
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/test_output/
+
+# Misc
+*.log
+*.tmp
+Thumbs.db
