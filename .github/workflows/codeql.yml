@@ -4,6 +4,9 @@
 # Swift needs a real xcodebuild because the project uses PBXFileSystemSynchronizedRootGroup
 # (empty traditional Sources phases), which CodeQL autobuild cannot see.
 #
+# Toolchain + Rust XCFramework run BEFORE CodeQL init so brew/cargo are not under the
+# Swift tracer. Only xcodebuild runs after init (traced extraction).
+#
 # Action majors (checked 2026-07-24):
 #   actions/checkout@v7
 #   github/codeql-action@v4
@@ -54,13 +57,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
-        with:
-          languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
-
-      # --- Swift manual build (CodeQL traces xcodebuild) ---
+      # --- Swift prep (before CodeQL init; not traced) ---
 
       - name: Install Rust toolchain
         if: matrix.language == 'swift'
@@ -81,6 +78,13 @@ jobs:
           MACOS_ONLY: "1"
         run: ./rust/build-xcframework.sh
 
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      # Only the Swift app build is traced for extraction.
       - name: Build Swift app (macOS)
         if: matrix.language == 'swift'
         run: |
