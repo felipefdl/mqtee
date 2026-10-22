@@ -47,23 +47,34 @@ struct PublishMessageIntent: AppIntent {
     @Parameter(title: "Retain", default: false)
     var retain: Bool
 
-    @Parameter(title: "Timeout (seconds)", default: 10)
+    @Parameter(title: "Timeout (seconds)", default: 10, inclusiveRange: (1, 300))
     var timeout: Int
 
+    /// Main actor: the intent client and the generated UniFFI bindings are main-actor isolated.
+    /// Every MQTT call only enqueues work for the Rust runtime, so nothing here blocks the main thread.
+    @MainActor
     func perform() async throws -> some IntentResult {
         let connections = ConnectionEntityQuery.loadConnections()
         guard let conn = connections.first(where: { $0.id == connection.id }) else {
             throw IntentMQTTError.connectionFailed("Connection not found")
         }
 
+        let timeoutDuration = IntentMQTTClient.timeoutDuration(seconds: timeout)
         let mqttClient = IntentMQTTClient()
-        let client = try await mqttClient.connect(connection: conn, timeoutSeconds: UInt64(timeout))
+        let client = try await mqttClient.connect(connection: conn, timeout: timeoutDuration)
 
         defer { mqttClient.disconnect(client: client) }
 
         let payloadData = Data(payload.utf8)
 
-        try mqttClient.publish(client: client, topic: topic, payload: payloadData, qos: qos.qosLevel, retain: retain)
+        try await mqttClient.publish(
+            client: client,
+            topic: topic,
+            payload: payloadData,
+            qos: qos.qosLevel,
+            retain: retain,
+            timeout: timeoutDuration
+        )
 
         return .result()
     }

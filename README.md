@@ -29,7 +29,7 @@ Native multi-platform MQTT client for macOS, iOS, and iPadOS. SwiftUI UI over a 
 - macOS 26.0+ / iOS 26.0+ / iPadOS 26.0+
 - Xcode 26.0+
 - Swift 6.0+
-- Rust 1.85.0+ (edition 2024)
+- Rust 1.87.0+ (edition 2024)
 - `just` (`brew install just`)
 - `cargo-bundle-licenses` (`cargo install cargo-bundle-licenses`)
 

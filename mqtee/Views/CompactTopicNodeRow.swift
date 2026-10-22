@@ -50,7 +50,7 @@ struct CompactTopicNodeRow: View {
                 .foregroundStyle(session.colorForTopic(node.fullPath))
                 .contentTransition(.symbolEffect(.replace))
 
-            Text(displayName ?? node.name)
+            Text(displayName ?? node.displayName)
                 .lineLimit(1)
 
             Spacer()
@@ -62,14 +62,6 @@ struct CompactTopicNodeRow: View {
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(.fill.tertiary, in: Capsule())
-            }
-
-            if hasChildren {
-                Image(systemName: "chevron.right")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .rotationEffect(.degrees(node.isExpanded ? 90 : 0))
-                    .animation(BrandTheme.springSnappy, value: node.isExpanded)
             }
         }
         .contextMenu {

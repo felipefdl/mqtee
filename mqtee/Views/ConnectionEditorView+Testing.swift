@@ -61,11 +61,19 @@ extension ConnectionEditorView {
     }
 
     func testConnection() async {
+        let ranges: MQTTConnectionConfigError.Ranges
+        do {
+            ranges = try MQTTConnectionConfigError.validate(port: port, keepAlive: keepAlive, sessionExpiry: "")
+        } catch {
+            testStatus = .failure(error.localizedDescription)
+            testErrorMessage = error.localizedDescription
+            return
+        }
         testStatus = .testing
 
-        let portNumber = UInt16(port) ?? 1883
+        let portNumber = ranges.port
         let effectiveClientId = clientId.isEmpty ? "mqtee-test-\(UUID().uuidString.prefix(8))" : clientId
-        let keepAliveSeconds = UInt16(keepAlive) ?? 60
+        let keepAliveSeconds = ranges.keepAlive
 
         var lastWillConfig: LastWillConfig?
         if lastWillEnabled && !lastWillTopic.isEmpty {
@@ -98,36 +106,52 @@ extension ConnectionEditorView {
 
         do {
             let result: ConnectionTestStatus = try await withCheckedThrowingContinuation { continuation in
-                class TestHandler: MqttEventHandler, @unchecked Sendable {
+                final class TestHandler: MqttEventHandler, @unchecked Sendable {
+                    private struct State {
+                        var resumed = false
+                        var client: MqttClient?
+                    }
+
                     let continuation: CheckedContinuation<ConnectionTestStatus, any Error>
-                    private let lock = OSAllocatedUnfairLock(initialState: false)
+                    private let lock = OSAllocatedUnfairLock(initialState: State())
 
                     init(continuation: CheckedContinuation<ConnectionTestStatus, any Error>) {
                         self.continuation = continuation
                     }
 
-                    func markResumed() -> Bool {
-                        lock.withLock { resumed in
-                            guard !resumed else { return false }
-                            resumed = true
-                            return true
+                    /// Stores the client; disconnects right away if the test already resolved.
+                    func attach(_ client: MqttClient) {
+                        let alreadyResolved = lock.withLock { state in
+                            state.client = client
+                            return state.resumed
+                        }
+                        if alreadyResolved {
+                            try? client.disconnect()
+                        }
+                    }
+
+                    /// Resolves the test once, then disconnects the client.
+                    func finish(_ result: Result<ConnectionTestStatus, any Error>) {
+                        let (won, client) = lock.withLock { state -> (Bool, MqttClient?) in
+                            guard !state.resumed else { return (false, nil) }
+                            state.resumed = true
+                            return (true, state.client)
+                        }
+                        guard won else { return }
+                        continuation.resume(with: result)
+                        if let client {
+                            Task { try? client.disconnect() }
                         }
                     }
 
                     func onEvent(event: ConnectionEvent) {
                         switch event {
                         case .connected:
-                            if markResumed() {
-                                continuation.resume(returning: .success)
-                            }
+                            finish(.success(.success))
                         case .error(let message):
-                            if markResumed() {
-                                continuation.resume(returning: .failure(message))
-                            }
+                            finish(.success(.failure(message)))
                         case .disconnected(let reason, _):
-                            if markResumed() {
-                                continuation.resume(returning: .failure(reason))
-                            }
+                            finish(.success(.failure(reason)))
                         default:
                             break
                         }
@@ -138,26 +162,16 @@ extension ConnectionEditorView {
 
                 do {
                     let client = try MqttClient(config: config, handler: handler)
+                    handler.attach(client)
                     try client.connect()
 
-                    // Timeout after 5 seconds
+                    // Timeout after 15 seconds: slow TLS handshakes on public brokers need more than a few seconds
                     Task {
-                        try? await Task.sleep(for: .seconds(5))
-                        if handler.markResumed() {
-                            try? client.disconnect()
-                            continuation.resume(returning: .failure("Connection timed out"))
-                        }
-                    }
-
-                    // Disconnect after success is captured by the handler
-                    Task {
-                        try? await Task.sleep(for: .milliseconds(500))
-                        try? client.disconnect()
+                        try? await Task.sleep(for: .seconds(15))
+                        handler.finish(.success(.failure("Connection timed out")))
                     }
                 } catch {
-                    if handler.markResumed() {
-                        continuation.resume(throwing: error)
-                    }
+                    handler.finish(.failure(error))
                 }
             }
 

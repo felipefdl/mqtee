@@ -53,6 +53,7 @@ struct ConnectionEditorView: View {
     // Test Connection
     @State var testStatus: ConnectionTestStatus = .idle
     @State var testErrorMessage: String?
+    @State var saveErrorMessage: String?
 
     #if os(macOS)
     @State private var selectedTab: EditorTab = .general
@@ -113,12 +114,32 @@ struct ConnectionEditorView: View {
                     Text(message)
                 }
             }
+            .alert("Invalid Connection Settings", isPresented: .init(
+                get: { saveErrorMessage != nil },
+                set: { if !$0 { saveErrorMessage = nil } }
+            )) {
+                Button("OK") { saveErrorMessage = nil }
+            } message: {
+                if let message = saveErrorMessage {
+                    Text(message)
+                }
+            }
     }
 
     @ViewBuilder
     private var sheetContent: some View {
         #if os(macOS)
         VStack(spacing: 0) {
+            HStack {
+                Text(existingConnection == nil ? "New Connection" : "Edit Connection")
+                    .font(.headline)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
+            Divider()
+
             HStack(spacing: 0) {
                 List(selection: Binding(
                     get: { selectedTab as EditorTab? },
@@ -137,22 +158,22 @@ struct ConnectionEditorView: View {
 
             Divider()
 
-            HStack {
-                testConnectionButton
-                Spacer()
+            HStack(spacing: 12) {
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
+                testConnectionButton
+                Spacer()
                 Button("Save") {
-                    saveConnection()
-                    dismiss()
+                    if saveConnection() { dismiss() }
                 }
                 .buttonStyle(.glassProminent)
                 .keyboardShortcut(.defaultAction)
                 .disabled(name.isEmpty || host.isEmpty)
             }
-            .padding(12)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
         }
-        .frame(width: 650, height: 500)
+        .frame(width: 650, height: 540)
         #else
         NavigationStack {
             TabView {
@@ -180,8 +201,7 @@ struct ConnectionEditorView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        saveConnection()
-                        dismiss()
+                        if saveConnection() { dismiss() }
                     }
                     .disabled(name.isEmpty || host.isEmpty)
                 }

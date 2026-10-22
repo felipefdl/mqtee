@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct ValidationResult {
+nonisolated struct ValidationResult: Sendable {
     let line: Int?
     let message: String
 }

@@ -18,9 +18,10 @@ struct ConnectionEntityQuery: EntityQuery {
         Self.loadConnections().map { ConnectionEntity(from: $0) }
     }
 
-    /// Loads connections from UserDefaults (same key as ConnectionStore) to avoid @MainActor dependency.
+    /// Loads connections from UserDefaults (same key as ConnectionStore, including the Debug prefix)
+    /// to avoid @MainActor dependency.
     static func loadConnections() -> [Connection] {
-        guard let data = UserDefaults.standard.data(forKey: "connections") else {
+        guard let data = UserDefaults.standard.data(forKey: "\(StorageEnvironment.keyPrefix)connections") else {
             return []
         }
         return (try? JSONDecoder().decode([Connection].self, from: data)) ?? []

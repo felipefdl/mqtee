@@ -126,7 +126,8 @@ struct SessionView: View {
             }
             .sheet(isPresented: $showStatusPopover) {
                 ConnectionStatusSheet(session: session, folder: folder)
-                    .presentationDetents([.medium])
+                    .presentationDetents([.medium, .large])
+                    .presentationSizing(.form)
                     .presentationDragIndicator(.visible)
             }
             .onChange(of: session.showPublishPopover) { _, newValue in

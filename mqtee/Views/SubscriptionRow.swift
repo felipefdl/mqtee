@@ -42,7 +42,8 @@ struct SubscriptionRow: View {
             Button {
                 onDelete()
             } label: {
-                Image(systemName: "trash")
+                Label("Delete Subscription", systemImage: "trash")
+                    .labelStyle(.iconOnly)
                     .foregroundStyle(.red)
             }
             .buttonStyle(.plain)

@@ -35,7 +35,7 @@ struct SubscriptionBar: View {
                     Button {
                         showSubscriptionConfig.toggle()
                     } label: {
-                        Image(systemName: "gearshape")
+                        Label("Subscription Options", systemImage: "gearshape").labelStyle(.iconOnly)
                     }
                     .buttonStyle(.plain)
                     .help("Subscription options")
@@ -74,7 +74,7 @@ struct SubscriptionBar: View {
                     Button {
                         submitSubscription()
                     } label: {
-                        Image(systemName: "plus.circle.fill")
+                        Label("Subscribe", systemImage: "plus.circle.fill").labelStyle(.iconOnly)
                     }
                     .buttonStyle(.glassProminent)
                     .glassEffectID("subscribeButton", in: namespace)

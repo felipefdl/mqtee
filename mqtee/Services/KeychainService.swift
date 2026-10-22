@@ -6,7 +6,7 @@
 import Foundation
 import Security
 
-struct ConnectionCredentials: Codable {
+nonisolated struct ConnectionCredentials: Codable, Sendable {
     var username: String?
     var password: String?
     var clientCertificate: Data?
@@ -22,7 +22,9 @@ enum KeychainError: Error {
     case decodingFailed
 }
 
-final class KeychainService {
+/// Stateless wrapper over the Security framework, safe to call off the main actor
+/// (iCloud Keychain reads can take seconds).
+nonisolated final class KeychainService: Sendable {
     static let shared = KeychainService()
     
     private let service = "\(StorageEnvironment.keyPrefix)com.mqtee.connections"

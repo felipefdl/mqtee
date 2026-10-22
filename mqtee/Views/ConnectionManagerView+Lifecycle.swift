@@ -52,18 +52,19 @@ extension ConnectionManagerView {
             let session = SessionStore(connection: updated)
             activeSession = session
 
-            session.connect()
-
+            // Apply persisted subscriptions before connecting so `mqttDidConnect` can resubscribe them.
             let connectionId = updated.id
             let persistSession = updated.persistSession
-            Task.detached {
-                let sessionData = persistSession ? SessionPersistenceService.loadSessionData(for: connectionId) : nil
-                let publishTabsData = SessionPersistenceService.loadPublishTabsData(for: connectionId)
+            let (sessionData, publishTabsData) = await Task.detached {
+                (
+                    persistSession ? SessionPersistenceService.loadSessionData(for: connectionId) : nil,
+                    SessionPersistenceService.loadPublishTabsData(for: connectionId)
+                )
+            }.value
+            guard !session.isStopped else { return }
+            session.applyPersistedData(session: sessionData, publishTabs: publishTabsData)
 
-                await MainActor.run {
-                    session.applyPersistedData(session: sessionData, publishTabs: publishTabsData)
-                }
-            }
+            session.connect()
 
             // Wait until connected, terminally failed, or cancelled (timeout 30s)
             let deadline = ContinuousClock.now + .seconds(30)
@@ -98,8 +99,10 @@ extension ConnectionManagerView {
             let session = MockData.makeSessionStore()
             activeSession = session
 
-            // Auto-show publish panel
+            // Auto-show publish panel once the session view is on screen: an iPad popover
+            // presented before its anchor exists raises an exception.
             if args.contains("--screenshot-publish") {
+                try? await Task.sleep(for: .seconds(0.5))
                 session.showPublishPopover = true
             }
 

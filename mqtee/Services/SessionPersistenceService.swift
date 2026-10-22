@@ -6,9 +6,9 @@
 import Foundation
 import os
 
-private let logger = Logger(subsystem: "app.mqtee", category: "SessionPersistence")
+nonisolated private let logger = Logger(subsystem: "app.mqtee", category: "SessionPersistence")
 
-struct PersistedSession: Codable {
+nonisolated struct PersistedSession: Codable, Sendable {
     let connectionId: UUID
     var subscriptions: [Subscription]
     var lastUpdated: Date

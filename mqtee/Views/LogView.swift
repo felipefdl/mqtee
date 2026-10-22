@@ -111,7 +111,8 @@ struct LogView: View {
                 Button {
                     searchText = ""
                 } label: {
-                    Image(systemName: "xmark.circle.fill")
+                    Label("Clear Filter", systemImage: "xmark.circle.fill")
+                        .labelStyle(.iconOnly)
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)

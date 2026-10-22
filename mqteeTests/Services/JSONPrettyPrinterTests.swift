@@ -34,11 +34,41 @@ struct JSONPrettyPrinterTests {
         #expect(result.contains(#"val\"ue"#))
     }
 
-    @Test("Handles large numbers")
-    func handlesLargeNumbers() {
-        let input = #"{"n":1.5e10}"#
+    @Test("Preserves number tokens verbatim")
+    func preservesNumberTokens() {
+        let input = #"{"n":1.5e10,"m":-0.0,"k":1E+2}"#
         let result = JSONPrettyPrinter.prettyPrint(input)!
-        #expect(result.contains("15000000000"))
+        #expect(result.contains(#""n": 1.5e10"#))
+        #expect(result.contains(#""m": -0.0"#))
+        #expect(result.contains(#""k": 1E+2"#))
+    }
+
+    @Test("Does not round big integers")
+    func preservesBigIntegers() {
+        let input = #"{"id":9007199254740993,"f":[12345678901234567890.12345678901234567890]}"#
+        let result = JSONPrettyPrinter.prettyPrint(input)!
+        #expect(result.contains("9007199254740993"))
+        #expect(result.contains("12345678901234567890.12345678901234567890"))
+    }
+
+    @Test("Strings with braces and escaped quotes are copied verbatim")
+    func stringsCopiedVerbatim() {
+        let input = #"{"a":"x\"},{\"y","b":"\\","c":"\u00e9 [1,2]"}"#
+        let result = JSONPrettyPrinter.prettyPrint(input)!
+        let lines = result.split(separator: "\n", omittingEmptySubsequences: false)
+        #expect(lines.count == 5)
+        #expect(lines[1] == #"    "a": "x\"},{\"y","#)
+        #expect(lines[2] == #"    "b": "\\","#)
+        #expect(lines[3] == #"    "c": "\u00e9 [1,2]""#)
+    }
+
+    @Test("Rejects malformed numbers, trailing data and unterminated strings")
+    func rejectsMalformed() {
+        #expect(JSONPrettyPrinter.prettyPrint("[01]") == nil)
+        #expect(JSONPrettyPrinter.prettyPrint("[1.]") == nil)
+        #expect(JSONPrettyPrinter.prettyPrint("{} x") == nil)
+        #expect(JSONPrettyPrinter.prettyPrint(#"{"a":"b"#) == nil)
+        #expect(JSONPrettyPrinter.prettyPrint(#"{"a":1,}"#) == nil)
     }
 
     @Test("Handles empty object")

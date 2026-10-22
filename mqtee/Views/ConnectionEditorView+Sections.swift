@@ -107,9 +107,15 @@ extension ConnectionEditorView {
             if lastWillEnabled {
                 TextField("Topic", text: $lastWillTopic, prompt: Text("status/offline"))
 
-                TextEditor(text: $lastWillMessage)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(height: 60)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Message")
+                    TextEditor(text: $lastWillMessage)
+                        .font(.system(.body, design: .monospaced))
+                        .frame(height: 60)
+                        .scrollContentBackground(.hidden)
+                        .padding(4)
+                        .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 6))
+                }
 
                 Picker("QoS", selection: $lastWillQoS) {
                     ForEach(QoSLevel.allCases, id: \.self) { qos in
@@ -132,7 +138,9 @@ extension ConnectionEditorView {
 
             LabeledContent("Keep Alive") {
                 HStack {
-                    TextField("60", text: $keepAlive)
+                    TextField("Keep Alive", text: $keepAlive, prompt: Text("60"))
+                        .labelsHidden()
+                        .multilineTextAlignment(.trailing)
                         .frame(width: 60)
                     Text("seconds")
                         .foregroundStyle(.secondary)
@@ -142,7 +150,9 @@ extension ConnectionEditorView {
             if mqttVersion == .v5 {
                 LabeledContent("Session Expiry") {
                     HStack {
-                        TextField("0", text: $sessionExpiry)
+                        TextField("Session Expiry", text: $sessionExpiry, prompt: Text("0"))
+                            .labelsHidden()
+                            .multilineTextAlignment(.trailing)
                             .frame(width: 60)
                         Text("seconds")
                             .foregroundStyle(.secondary)

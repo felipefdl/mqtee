@@ -49,6 +49,7 @@ struct SessionToolbarContent: View {
         .animation(BrandTheme.easeQuick, value: isHoveringToolbar)
         .contentShape(Rectangle())
         .onTapGesture { showStatusPopover.toggle() }
+        .accessibilityAddTraits(.isButton)
         .popover(isPresented: $showStatusPopover) {
             ConnectionStatusPopover(session: session)
         }
@@ -71,6 +72,9 @@ struct SessionToolbarContent: View {
         }
         .contentShape(Rectangle())
         .onTapGesture { showStatusPopover = true }
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(session.statusLabel)
+        .accessibilityAddTraits(.isButton)
         #endif
     }
 }

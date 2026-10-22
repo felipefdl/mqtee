@@ -2,10 +2,13 @@ import Foundation
 
 extension SessionStore {
     func connect() {
-        guard !isConnected && !isConnecting else { return }
+        guard !isStopped, !isConnected, !isConnecting else { return }
 
         isConnecting = true
         connectionError = nil
+        reconnectCancelled = false
+        connectGeneration += 1
+        let generation = connectGeneration
 
         let deviceClientId = MQTTService.deviceClientId(for: connection.id)
         logStore.logConnection(
@@ -25,17 +28,19 @@ extension SessionStore {
                 creds = existingCredentials
             } else {
                 creds = try? KeychainService.shared.loadCredentials(for: connectionSnapshot.id)
-                await MainActor.run { [weak self] in
-                    self?.credentials = creds
-                }
             }
 
-            let config = MQTTConnectionConfig(from: connectionSnapshot, credentials: creds)
-            do {
-                try service.connect(config: config)
-            } catch {
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
+            // Re-check on the main actor, in the same turn as the connect call, so a session that
+            // was closed or cancelled while credentials loaded can never start a client.
+            await MainActor.run { [weak self] in
+                guard let self, !isStopped, connectGeneration == generation else { return }
+                if existingCredentials == nil {
+                    credentials = creds
+                }
+                do {
+                    let config = try MQTTConnectionConfig(from: connectionSnapshot, credentials: creds)
+                    try service.connect(config: config)
+                } catch {
                     connectionError = error.localizedDescription
                     isConnecting = false
                     logStore.logError(
@@ -53,6 +58,7 @@ extension SessionStore {
 
     func cleanup() {
         isStopped = true
+        connectGeneration += 1
         mqttService.delegate = nil
 
         reconnectTask?.cancel()
@@ -89,12 +95,9 @@ extension SessionStore {
     }
 
     func disconnect() {
-        guard isConnected || isReconnecting else { return }
+        guard isConnected || isReconnecting || isConnecting else { return }
 
-        reconnectTask?.cancel()
-        reconnectTask = nil
-        reconnectAttempt = 0
-        isReconnecting = false
+        invalidateConnectAttempt()
 
         guard isConnected else { return }
 
@@ -128,10 +131,24 @@ extension SessionStore {
     }
 
     func cancelAutoReconnect() {
+        invalidateConnectAttempt()
+    }
+
+    /// Abandons any pending or in-flight connect/reconnect attempt: later results from it are
+    /// ignored, a client it already created is disconnected, and no further reconnect is scheduled.
+    private func invalidateConnectAttempt() {
+        let hadPendingAttempt = isReconnecting || isConnecting
+        connectGeneration += 1
+        reconnectCancelled = true
         reconnectTask?.cancel()
         reconnectTask = nil
         reconnectAttempt = 0
         isReconnecting = false
+        if isConnecting {
+            isConnecting = false
+            try? mqttService.disconnect()
+        }
+        guard hadPendingAttempt else { return }
         logStore.logConnection(
             "Auto-reconnect cancelled",
             level: .info,
@@ -145,8 +162,7 @@ extension SessionStore {
         reconnectAttempt += 1
         isReconnecting = true
 
-        let baseInterval = reconnectIntervalSeconds
-        let delay = min(baseInterval * Int(pow(2.0, Double(reconnectAttempt - 1))), 60)
+        let delay = Self.reconnectDelay(attempt: reconnectAttempt, baseInterval: reconnectIntervalSeconds)
 
         logStore.logConnection(
             "Auto-reconnect attempt \(reconnectAttempt) in \(delay)s",
@@ -160,5 +176,15 @@ extension SessionStore {
             guard !Task.isCancelled else { return }
             self?.connect()
         }
+    }
+
+    static let maxReconnectDelaySeconds = 60
+
+    /// Exponential backoff capped at `maxReconnectDelaySeconds`. The exponent is clamped
+    /// so the shift can never overflow, no matter how many attempts a long outage accrues.
+    static func reconnectDelay(attempt: Int, baseInterval: Int) -> Int {
+        let base = min(max(baseInterval, 1), maxReconnectDelaySeconds)
+        let exponent = min(max(attempt - 1, 0), 6)
+        return min(base << exponent, maxReconnectDelaySeconds)
     }
 }

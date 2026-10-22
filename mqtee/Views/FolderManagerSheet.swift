@@ -153,7 +153,8 @@ struct FolderManagerSheet: View {
                 Button {
                     commitRename(folder)
                 } label: {
-                    Image(systemName: "checkmark.circle.fill")
+                    Label("Save Name", systemImage: "checkmark.circle.fill")
+                        .labelStyle(.iconOnly)
                         .foregroundStyle(.green)
                 }
                 .buttonStyle(.plain)
@@ -161,7 +162,8 @@ struct FolderManagerSheet: View {
                 Button {
                     renamingFolderId = nil
                 } label: {
-                    Image(systemName: "xmark.circle.fill")
+                    Label("Cancel Rename", systemImage: "xmark.circle.fill")
+                        .labelStyle(.iconOnly)
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
@@ -207,7 +209,8 @@ struct FolderManagerSheet: View {
                         Label("Delete Folder", systemImage: "trash")
                     }
                 } label: {
-                    Image(systemName: "ellipsis.circle")
+                    Label("Folder Options", systemImage: "ellipsis.circle")
+                        .labelStyle(.iconOnly)
                         .foregroundStyle(.secondary)
                 }
                 .menuStyle(.button)
@@ -234,6 +237,9 @@ struct FolderManagerSheet: View {
                     .onTapGesture {
                         selection.wrappedValue = color
                     }
+                    .accessibilityElement()
+                    .accessibilityLabel(color.localizedName)
+                    .accessibilityAddTraits(selection.wrappedValue == color ? [.isButton, .isSelected] : .isButton)
             }
         }
     }

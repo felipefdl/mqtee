@@ -31,6 +31,8 @@ struct MessageFilterBar: View {
                     }
                 }
             }
+            .accessibilityLabel("Filters")
+            .accessibilityValue(filter.activeFilterCount > 0 ? Text("\(filter.activeFilterCount) active") : Text(""))
             .buttonStyle(.glass)
             .tint(filter.activeFilterCount > 0 ? .accentColor : nil)
             .controlSize(.small)
@@ -64,7 +66,8 @@ struct MessageFilterBar: View {
                 Button {
                     filter.payloadSearchText = ""
                 } label: {
-                    Image(systemName: "xmark.circle.fill")
+                    Label("Clear Filter", systemImage: "xmark.circle.fill")
+                        .labelStyle(.iconOnly)
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)

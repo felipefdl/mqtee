@@ -52,7 +52,7 @@ struct TreeView: View {
         } detail: {
             HSplitView {
                 messageListPanel
-                    .frame(minWidth: 250, idealWidth: 370, maxWidth: 420)
+                    .frame(minWidth: 250, idealWidth: 300, maxWidth: 420)
                 VSplitView {
                     payloadDetailPanel
                         .frame(minWidth: 200, idealWidth: 300)
@@ -90,11 +90,11 @@ struct TreeView: View {
         HStack(spacing: 0) {
             if showSidebar {
                 topicTreeSidebar()
-                    .frame(width: 240)
+                    .containerRelativeFrame(.horizontal) { width, _ in min(max(width * 0.27, 260), 360) }
                 Divider()
             }
             messageListPanel
-                .frame(minWidth: 260, idealWidth: 320, maxWidth: 380)
+                .containerRelativeFrame(.horizontal) { width, _ in min(max(width * 0.3, 280), 420) }
             Divider()
             Color.clear
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -129,7 +129,7 @@ struct TreeView: View {
                 Button {
                     withAnimation { showSidebar.toggle() }
                 } label: {
-                    Image(systemName: "sidebar.left")
+                    Label("Toggle Sidebar", systemImage: "sidebar.left").labelStyle(.iconOnly)
                 }
             }
         }

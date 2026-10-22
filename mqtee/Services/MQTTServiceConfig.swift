@@ -20,13 +20,18 @@ struct MQTTConnectionConfig {
     var sessionExpiryInterval: UInt32?
     var maxPacketSize: UInt32?
 
-    init(from connection: Connection, credentials: ConnectionCredentials? = nil) {
+    init(from connection: Connection, credentials: ConnectionCredentials? = nil) throws {
+        let ranges = try MQTTConnectionConfigError.validate(
+            port: connection.port,
+            keepAlive: connection.keepAlive,
+            sessionExpiry: connection.sessionExpiry
+        )
         self.clientId = MQTTService.deviceClientId(for: connection.id)
         self.host = connection.host
-        self.port = UInt16(connection.port)
+        self.port = ranges.port
         self.mqttVersion = connection.mqttVersion
         self.cleanSession = connection.cleanSession
-        self.keepAliveSecs = UInt16(connection.keepAlive)
+        self.keepAliveSecs = ranges.keepAlive
         self.username = credentials?.username ?? connection.username
         self.password = credentials?.password
         self.useTLS = connection.useTLS
@@ -34,7 +39,7 @@ struct MQTTConnectionConfig {
         self.caCertificate = credentials?.caCertificate
         self.clientCertificate = credentials?.clientCertificate
         self.clientKey = credentials?.clientKey
-        self.sessionExpiryInterval = connection.sessionExpiry.map { UInt32($0) }
+        self.sessionExpiryInterval = ranges.sessionExpiry
         self.maxPacketSize = nil
 
         if connection.lastWill.enabled {

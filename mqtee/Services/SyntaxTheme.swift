@@ -1,6 +1,6 @@
 import SwiftUI
 
-enum JSONToken {
+nonisolated enum JSONToken {
     case key
     case stringValue
     case numberValue
@@ -9,7 +9,7 @@ enum JSONToken {
     case punctuation
 }
 
-enum XMLToken {
+nonisolated enum XMLToken {
     case tagName
     case attributeName
     case attributeValue
@@ -18,7 +18,7 @@ enum XMLToken {
     case punctuation
 }
 
-struct SyntaxTheme {
+nonisolated struct SyntaxTheme: Sendable {
     let colorScheme: ColorScheme
 
     func color(for token: JSONToken) -> Color {

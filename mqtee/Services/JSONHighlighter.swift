@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct JSONHighlighter {
+nonisolated struct JSONHighlighter {
     private static let maxHighlightSize = 100_000  // 100KB guard
 
     static func highlight(_ jsonString: String, theme: SyntaxTheme) -> AttributedString {
@@ -24,10 +24,10 @@ struct JSONHighlighter {
             case "\"":
                 let stringStart = i
                 i += 1
-                // Walk to end of quoted string, handling escapes
+                // Walk to end of quoted string, handling escapes. An escape at the very end
+                // (text still being typed, e.g. `"a\`) must not step past the last character.
                 while i < count && chars[i] != "\"" {
-                    if chars[i] == "\\" { i += 1 }  // skip escaped char
-                    i += 1
+                    i = min(i + (chars[i] == "\\" ? 2 : 1), count)
                 }
                 if i < count { i += 1 }  // consume closing quote
 

@@ -10,9 +10,7 @@ struct MessageListPanel: View {
     @AppStorage("compactPayloadLines") var compactLines = 2
     @AppStorage("comfortablePayloadLines") var comfortableLines = 8
 
-    @State private var currentMessages: [MQTTMessage] = []
-    @State private var filteredMessages: [MQTTMessage] = []
-    @State private var topicColors: [String: Color] = [:]
+    @State private var list = MessageListState()
     @State private var messageFilter = MessageFilterState()
 
     private var density: MessageListDensity {
@@ -27,7 +25,7 @@ struct MessageListPanel: View {
         Binding(
             get: { selectedMessage?.id },
             set: { newID in
-                selectedMessage = newID.flatMap { id in filteredMessages.first { $0.id == id } }
+                selectedMessage = newID.flatMap { id in list.filteredMessages.first { $0.id == id } }
             }
         )
     }
@@ -49,9 +47,9 @@ struct MessageListPanel: View {
 
                         Group {
                             if messageFilter.isActive {
-                                Label("\(filteredMessages.count) / \(currentMessages.count) messages", systemImage: "envelope")
+                                Label("\(list.filteredMessages.count) / \(list.currentMessages.count) messages", systemImage: "envelope")
                             } else {
-                                Label("\(currentMessages.count) messages", systemImage: "envelope")
+                                Label("\(list.currentMessages.count) messages", systemImage: "envelope")
                             }
                         }
                         .font(.caption)
@@ -77,6 +75,7 @@ struct MessageListPanel: View {
                     Image(systemName: density == .compact
                         ? "rectangle.compress.vertical"
                         : "rectangle.expand.vertical")
+                        .accessibilityLabel(density == .compact ? "Switch to comfortable density" : "Switch to compact density")
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
@@ -98,9 +97,7 @@ struct MessageListPanel: View {
             messageListContent
         }
         .onChange(of: selectedNode) { _, _ in
-            currentMessages = []
-            filteredMessages = []
-            topicColors = [:]
+            list.reset()
             selectedMessage = nil
             autoScroll = true
             updateMessages()
@@ -119,42 +116,12 @@ struct MessageListPanel: View {
     private var messageListContent: some View {
         ScrollViewReader { proxy in
             List(selection: listSelectionID) {
-                ForEach(filteredMessages) { message in
-                    let color = topicColors[message.topic] ?? .secondary
+                ForEach(list.filteredMessages) { message in
+                    let color = list.topicColors[message.topic] ?? .secondary
                     MessageRowView(message: message, color: color, payloadLineLimit: payloadLineLimit)
                         .transaction { $0.animation = nil }
                         .tag(message.id)
-                        .contextMenu {
-                            Button("Publish to this topic", systemImage: "paperplane") {
-                                session.preparePublishFromContext(topic: message.topic, payload: message.payloadString)
-                            }
-
-                            Divider()
-
-                            Button("Copy Message", systemImage: "doc.on.doc") {
-                                let text = MessageExportService.formatAsMarkdown(message)
-                                MessageExportService.copyToClipboard(text)
-                            }
-
-                            Menu("Copy Message As...") {
-                                Button("Markdown") {
-                                    let text = MessageExportService.formatAsMarkdown(message)
-                                    MessageExportService.copyToClipboard(text)
-                                }
-                                Button("JSON") {
-                                    let text = MessageExportService.formatAsJSON(message)
-                                    MessageExportService.copyToClipboard(text)
-                                }
-                                Button("CSV") {
-                                    let text = MessageExportService.formatMessagesAsCSV([message])
-                                    MessageExportService.copyToClipboard(text)
-                                }
-                            }
-
-                            Button("Copy Payload Only", systemImage: "text.document") {
-                                MessageExportService.copyToClipboard(message.payloadString)
-                            }
-                        }
+                        .contextMenu { MessageContextMenu(message: message, session: session) }
                 }
                 Color.clear
                     .frame(height: 1)
@@ -163,6 +130,9 @@ struct MessageListPanel: View {
                     .listRowInsets(EdgeInsets())
             }
             .listStyle(.plain)
+            // Recreate the List when it flips between empty and populated: a List that first renders empty keeps
+            // stale single-line row heights on macOS.
+            .id(list.filteredMessages.isEmpty)
             .defaultScrollAnchor(.bottom)
             .background {
                 MessageVersionObserver(
@@ -178,7 +148,7 @@ struct MessageListPanel: View {
             .onChange(of: autoScroll) { oldValue, newValue in
                 if !oldValue && newValue {
                     updateMessages()
-                    if !filteredMessages.isEmpty {
+                    if !list.filteredMessages.isEmpty {
                         Task { @MainActor in
                             proxy.scrollTo("bottom-anchor", anchor: .bottom)
                         }
@@ -189,7 +159,7 @@ struct MessageListPanel: View {
                 PendingCountOverlay(
                     selectedNode: selectedNode,
                     showAllDescendants: showAllDescendants,
-                    currentCount: currentMessages.count,
+                    shownReceivedCount: list.shownReceivedCount,
                     autoScroll: autoScroll,
                     onShowNew: { updateMessages() },
                     onAutoScroll: {
@@ -208,53 +178,10 @@ struct MessageListPanel: View {
     }
 
     private func updateMessages() {
-        guard let selectedNode else {
-            if !currentMessages.isEmpty {
-                currentMessages = []
-                filteredMessages = []
-                topicColors = [:]
-            }
-            return
-        }
-        let current = session.messages(for: selectedNode.fullPath, includeDescendants: showAllDescendants)
-        let previousCount = currentMessages.count
-        guard current.count != previousCount else { return }
-
-        if previousCount == 0 || current.count < previousCount {
-            let filtered = messageFilter.isActive ? messageFilter.apply(to: current) : current
-            var colors: [String: Color] = [:]
-            for message in filtered {
-                if colors[message.topic] == nil {
-                    colors[message.topic] = session.colorForTopic(message.topic)
-                }
-            }
-            currentMessages = current
-            filteredMessages = filtered
-            topicColors = colors
-        } else {
-            let newMessages = Array(current[previousCount...])
-            let newFiltered = messageFilter.isActive ? messageFilter.apply(to: newMessages) : newMessages
-            currentMessages = current
-            if !newFiltered.isEmpty {
-                for message in newFiltered {
-                    if topicColors[message.topic] == nil {
-                        topicColors[message.topic] = session.colorForTopic(message.topic)
-                    }
-                }
-                filteredMessages.append(contentsOf: newFiltered)
-            }
-        }
+        list.refresh(node: selectedNode, includeDescendants: showAllDescendants, filter: messageFilter, session: session)
     }
 
     private func applyFilter() {
-        let filtered = messageFilter.isActive ? messageFilter.apply(to: currentMessages) : currentMessages
-        var colors: [String: Color] = [:]
-        for message in filtered {
-            if colors[message.topic] == nil {
-                colors[message.topic] = session.colorForTopic(message.topic)
-            }
-        }
-        filteredMessages = filtered
-        topicColors = colors
+        list.applyFilter(messageFilter, session: session)
     }
 }

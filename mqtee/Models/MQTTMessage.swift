@@ -1,12 +1,12 @@
 import Foundation
 import SwiftUI
 
-struct MQTTUserProperty: Hashable, Codable {
+nonisolated struct MQTTUserProperty: Hashable, Codable, Sendable {
     var key: String
     var value: String
 }
 
-struct MQTTMessage: Identifiable, Codable {
+nonisolated struct MQTTMessage: Identifiable, Codable, Sendable {
     let id: UUID
     let topic: String
     let payload: Data
@@ -179,7 +179,7 @@ struct MQTTMessage: Identifiable, Codable {
     }
 }
 
-extension MQTTMessage: Hashable {
+nonisolated extension MQTTMessage: Hashable {
     static func == (lhs: MQTTMessage, rhs: MQTTMessage) -> Bool {
         lhs.id == rhs.id
     }
@@ -189,7 +189,7 @@ extension MQTTMessage: Hashable {
     }
 }
 
-struct Subscription: Identifiable, Hashable, Codable {
+nonisolated struct Subscription: Identifiable, Hashable, Codable, Sendable {
     let id: UUID
     var topic: String
     var qos: QoSLevel
@@ -218,7 +218,7 @@ struct Subscription: Identifiable, Hashable, Codable {
     }
 }
 
-enum RetainHandling: Int, CaseIterable, Hashable, Codable {
+nonisolated enum RetainHandling: Int, CaseIterable, Hashable, Codable, Sendable {
     case sendOnSubscribe = 0
     case sendOnNewSubscribe = 1
     case doNotSend = 2
@@ -232,7 +232,7 @@ enum RetainHandling: Int, CaseIterable, Hashable, Codable {
     }
 }
 
-enum SubscriptionColor: String, CaseIterable, Hashable, Codable {
+nonisolated enum SubscriptionColor: String, CaseIterable, Hashable, Codable, Sendable {
     case blue
     case green
     case orange

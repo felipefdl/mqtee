@@ -15,7 +15,26 @@ struct LicenseEntry: Codable, Identifiable {
     var id: String { "\(packageName)-\(packageVersion)" }
 
     var displayLicenseText: String {
-        licenses.map(\.text).joined(separator: "\n\n---\n\n")
+        licenses.map { Self.reflowed($0.text) }.joined(separator: "\n\n---\n\n")
+    }
+
+    /// License files are hard-wrapped at a fixed column, which re-wraps raggedly on narrow screens.
+    /// Joins the lines of plain paragraphs; paragraphs with indentation or list markers keep their breaks.
+    static func reflowed(_ text: String) -> String {
+        let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: #"(?m)^={24,}[ \t]*$"#, with: "========================", options: .regularExpression)
+        let paragraphs = normalized.components(separatedBy: "\n\n")
+        return paragraphs.map { paragraph in
+            let lines = paragraph.components(separatedBy: "\n")
+            guard lines.count > 1, lines.allSatisfy(isPlainLine) else { return paragraph }
+            return lines.map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: " ")
+        }.joined(separator: "\n\n")
+    }
+
+    nonisolated private static func isPlainLine(_ line: String) -> Bool {
+        guard let first = line.first, !first.isWhitespace else { return false }
+        if "-*•+#>".contains(first) { return false }
+        return line.range(of: #"^\(?([0-9]+|[A-Za-z])[.)]\s"#, options: .regularExpression) == nil
     }
 
     struct LicenseText: Codable {

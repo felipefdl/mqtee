@@ -14,7 +14,7 @@ extension PublishPanelContent {
             .frame(maxHeight: .infinity)
             .overlay(alignment: .topTrailing) {
                 Button { prettifyJSON() } label: {
-                    Image(systemName: "curlybraces")
+                    Label("Prettify JSON", systemImage: "curlybraces").labelStyle(.iconOnly)
                 }
                 .buttonStyle(.glass)
                 .controlSize(.small)
@@ -43,7 +43,7 @@ extension PublishPanelContent {
             .frame(maxHeight: .infinity)
             .overlay(alignment: .topTrailing) {
                 Button { prettifyXML() } label: {
-                    Image(systemName: "curlybraces")
+                    Label("Prettify XML", systemImage: "curlybraces").labelStyle(.iconOnly)
                 }
                 .buttonStyle(.glass)
                 .controlSize(.small)
@@ -57,7 +57,31 @@ extension PublishPanelContent {
         }
     }
 
-    private static func validateJSON(_ text: String) -> ValidationResult? {
+    /// QoS and Retain share one row when the panel is wide enough and stack when it is narrow (docked in portrait).
+    var qosRetainRow: some View {
+        let qosPicker = Picker("QoS", selection: $qos) {
+            ForEach(QoSLevel.allCases, id: \.self) { level in
+                Text("\(level.rawValue) - \(level.description)").tag(level)
+            }
+        }
+        .fixedSize()
+        .tint(.primary)
+        let retainToggle = Toggle("Retain", isOn: $retain)
+            .fixedSize()
+        return ViewThatFits(in: .horizontal) {
+            HStack {
+                qosPicker
+                Spacer()
+                retainToggle
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                qosPicker
+                retainToggle
+            }
+        }
+    }
+
+    nonisolated private static func validateJSON(_ text: String) -> ValidationResult? {
         guard let data = text.data(using: .utf8) else { return nil }
         do {
             _ = try JSONSerialization.jsonObject(with: data)
@@ -74,7 +98,7 @@ extension PublishPanelContent {
         }
     }
 
-    private static func validateXMLText(_ text: String) -> ValidationResult? {
+    nonisolated private static func validateXMLText(_ text: String) -> ValidationResult? {
         guard let data = text.data(using: .utf8) else { return nil }
         let parser = XMLParser(data: data)
         let delegate = XMLValidationDelegate()

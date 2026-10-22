@@ -3,6 +3,11 @@ import Foundation
 extension SessionStore: MQTTServiceDelegate {
     func mqttDidConnect() {
         guard !isStopped else { return }
+        if reconnectCancelled {
+            // The attempt was cancelled while in flight; drop the connection it just made.
+            try? mqttService.disconnect()
+            return
+        }
         reconnectTask?.cancel()
         reconnectTask = nil
         reconnectAttempt = 0
@@ -19,8 +24,9 @@ extension SessionStore: MQTTServiceDelegate {
             connectionId: connection.id
         )
 
-        // Auto-resubscribe to persisted subscriptions
-        if connection.persistSession && !subscriptions.isEmpty {
+        // Resubscribe in-memory subscriptions: clean-session reconnects lose broker-side state,
+        // and resubscribing is idempotent when the broker kept the session.
+        if !subscriptions.isEmpty {
             resubscribeAll()
         }
 
@@ -65,14 +71,14 @@ extension SessionStore: MQTTServiceDelegate {
             )
         }
 
-        if !isUserRequested && !pendingReconnect {
+        if !isUserRequested && !pendingReconnect && !reconnectCancelled {
             connectionError = reason
         }
 
         if pendingReconnect {
             pendingReconnect = false
             connect()
-        } else if !isUserRequested && !isStopped {
+        } else if !isUserRequested && !isStopped && !reconnectCancelled {
             scheduleAutoReconnect()
         }
     }

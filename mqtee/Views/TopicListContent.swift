@@ -74,7 +74,8 @@ struct TopicListContent: View {
                     Button {
                         searchText = ""
                     } label: {
-                        Image(systemName: "xmark.circle.fill")
+                        Label("Clear Filter", systemImage: "xmark.circle.fill")
+                            .labelStyle(.iconOnly)
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
@@ -89,6 +90,7 @@ struct TopicListContent: View {
                 Image(systemName: showAllDescendants ? "rectangle.stack" : "rectangle")
                     .foregroundStyle(showAllDescendants ? .primary : .secondary)
                     .frame(width: 16, height: 16)
+                    .accessibilityLabel(showAllDescendants ? "Showing all descendant messages" : "Showing only this topic's messages")
             }
             .buttonStyle(.plain)
             .frame(width: 28, height: 28)

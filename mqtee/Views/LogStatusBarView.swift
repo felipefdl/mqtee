@@ -27,6 +27,8 @@ struct LogStatusBarView: View {
                     Spacer()
                     Text(entry.timestamp, format: .relative(presentation: .named))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
                 }
                 .font(.system(.caption, design: .monospaced))
                 #if os(macOS)

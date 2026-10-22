@@ -5,29 +5,39 @@ struct SidebarSegmentBar: View {
     @Binding var sidebarMode: SidebarMode
 
     var body: some View {
+        ViewThatFits(in: .horizontal) {
+            buttons(iconOnly: false)
+            buttons(iconOnly: true)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+    }
+
+    private func buttons(iconOnly: Bool) -> some View {
         HStack(spacing: 6) {
             segmentButton(
                 "Topics",
                 systemImage: "list.bullet.indent",
                 mode: .topics,
-                badge: session.topicTree.activeNodeCount
+                badge: session.topicTree.activeNodeCount,
+                iconOnly: iconOnly
             )
             segmentButton(
                 "Subscriptions",
                 systemImage: "antenna.radiowaves.left.and.right",
                 mode: .subscriptions,
-                badge: session.subscriptions.count
+                badge: session.subscriptions.count,
+                iconOnly: iconOnly
             )
         }
-        .padding(.horizontal)
-        .padding(.vertical, 8)
     }
 
     private func segmentButton(
         _ title: LocalizedStringKey,
         systemImage: String,
         mode: SidebarMode,
-        badge: Int
+        badge: Int,
+        iconOnly: Bool
     ) -> some View {
         let isSelected = sidebarMode == mode
         return Button {
@@ -35,12 +45,19 @@ struct SidebarSegmentBar: View {
                 sidebarMode = mode
             }
         } label: {
-            Label(title, systemImage: systemImage)
-                .font(.subheadline)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
-                .contentShape(.rect)
+            Group {
+                if iconOnly {
+                    Label(title, systemImage: systemImage).labelStyle(.iconOnly)
+                } else {
+                    Label(title, systemImage: systemImage)
+                }
+            }
+            .font(.subheadline)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
+            .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .background {

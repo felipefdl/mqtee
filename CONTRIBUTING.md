@@ -16,7 +16,7 @@ just build-rust
 open mqtee.xcodeproj
 ```
 
-Requirements: Xcode 26.0+, Rust 1.85.0+, `just`, `cargo-bundle-licenses`.
+Requirements: Xcode 26.0+, Rust 1.87.0+, `just`, `cargo-bundle-licenses`.
 
 ## Tests
 

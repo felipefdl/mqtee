@@ -57,6 +57,7 @@ struct PayloadDisplayView: View {
         .pickerStyle(.segmented)
         #endif
         .labelsHidden()
+        .accessibilityIdentifier("payload.displayMode")
         .disabled(!hasMessage)
         .onChange(of: message?.id) {
             if !isFormattedAvailable && displayMode == .formatted {
@@ -77,6 +78,7 @@ struct PayloadDisplayView: View {
                 Text("Payload")
                     .font(.headline)
                     .foregroundStyle(hasMessage ? .primary : .tertiary)
+                    .accessibilityIdentifier("payload.title")
                 #endif
 
                 #if os(macOS)
@@ -87,6 +89,7 @@ struct PayloadDisplayView: View {
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
                         .background(.fill.tertiary, in: Capsule())
+                        .accessibilityIdentifier("payload.contentType")
                         .layoutPriority(-1)
                 }
                 #endif
@@ -165,12 +168,6 @@ struct PayloadDisplayView: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .padding()
                     }
-                } else {
-                    Text("No message selected")
-                        .font(.system(.body, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .padding()
                 }
             }
         }

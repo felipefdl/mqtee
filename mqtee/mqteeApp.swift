@@ -29,8 +29,7 @@ struct mqteeApp: App {
         #if os(macOS)
         Settings {
             GeneralSettingsView()
-                .frame(width: 500)
-                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: 500, height: 640)
         }
 
         Window("Open Source Licenses", id: "licenses") {
@@ -47,6 +46,7 @@ struct mqteeApp: App {
             }
         }
         .defaultSize(width: 700, height: 400)
+        .restorationBehavior(.disabled)
         #endif
     }
 }

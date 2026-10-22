@@ -112,6 +112,7 @@ extension SessionStore {
             connectionId: connection.id
         )
 
+        guard isConnected else { return }
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -154,7 +155,7 @@ extension SessionStore {
             return wouldBeRemoved && !coveredByRemaining
         }
 
-        if !matchingSubscriptions.isEmpty {
+        if !matchingSubscriptions.isEmpty && isConnected {
             let topics = matchingSubscriptions.map(\.topic)
             Task { [weak self] in
                 guard let self else { return }

@@ -1,19 +1,18 @@
 import SwiftUI
 
-// Standalone overlay that reads TopicNode.cachedTotalCount independently.
-// Only this view re-renders when the count changes, not the parent List.
+// Standalone overlay that reads the node's received counters independently.
+// Only this view re-renders when they change, not the parent List.
 struct PendingCountOverlay: View {
     var selectedNode: TopicNode?
     var showAllDescendants: Bool
-    var currentCount: Int
+    /// The node's received counter captured when the list was last refreshed.
+    var shownReceivedCount: Int
     var autoScroll: Bool
     var onShowNew: () -> Void
     var onAutoScroll: () -> Void
 
     private var pendingCount: Int {
-        guard let selectedNode else { return 0 }
-        let total = showAllDescendants ? selectedNode.totalMessageCount : selectedNode.messageCount
-        return max(0, total - currentCount)
+        selectedNode?.pendingCount(since: shownReceivedCount, includeDescendants: showAllDescendants) ?? 0
     }
 
     var body: some View {
@@ -34,10 +33,7 @@ struct PendingCountOverlay: View {
             }
             .buttonStyle(.glassProminent)
             .controlSize(.small)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-            .padding(.bottom, 8)
+            .padding(.bottom, 12)
             .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }

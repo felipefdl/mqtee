@@ -1,50 +1,6 @@
 import Foundation
 
 @Observable
-final class TopicNode: Identifiable, Hashable {
-    let id: UUID
-    let name: String
-    let fullPath: String
-    var children: [TopicNode]
-    @ObservationIgnored var messages: [MQTTMessage]
-    var isExpanded: Bool
-    fileprivate(set) var cachedTotalCount: Int = 0
-
-    var latestMessage: MQTTMessage? {
-        messages.last
-    }
-
-    var messageCount: Int {
-        messages.count
-    }
-
-    var totalMessageCount: Int {
-        cachedTotalCount
-    }
-
-    var hasChildren: Bool {
-        !children.isEmpty
-    }
-
-    init(name: String, fullPath: String, children: [TopicNode] = [], messages: [MQTTMessage] = [], isExpanded: Bool = false) {
-        self.id = UUID()
-        self.name = name
-        self.fullPath = fullPath
-        self.children = children
-        self.messages = messages
-        self.isExpanded = isExpanded
-    }
-
-    static func == (lhs: TopicNode, rhs: TopicNode) -> Bool {
-        lhs.id == rhs.id
-    }
-
-    func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-    }
-}
-
-@Observable
 final class TopicTree {
     private(set) var root: TopicNode
     private(set) var hasMessages: Bool = false
@@ -58,14 +14,27 @@ final class TopicTree {
         self.root = TopicNode(name: "", fullPath: "")
     }
 
+    /// Splits a topic into levels, keeping empty ones so node paths equal the exact topic prefixes.
+    private static func levels(of topic: String) -> [(name: String, path: String)] {
+        guard !topic.isEmpty else { return [] }
+        var result: [(name: String, path: String)] = []
+        var path = ""
+        for (index, substring) in topic.split(separator: "/", omittingEmptySubsequences: false).enumerated() {
+            let name = String(substring)
+            path = index == 0 ? name : "\(path)/\(name)"
+            result.append((name: name, path: path))
+        }
+        return result
+    }
+
     func addMessage(_ message: MQTTMessage) {
         if !hasMessages { hasMessages = true }
-        let parts = message.topic.split(separator: "/").map(String.init)
-        var currentPath = ""
         var currentNode = root
+        let levels = Self.levels(of: message.topic)
 
-        for (index, part) in parts.enumerated() {
-            currentPath = currentPath.isEmpty ? part : "\(currentPath)/\(part)"
+        for (index, level) in levels.enumerated() {
+            let part = level.name
+            let currentPath = level.path
 
             if let existingNode = nodeCache[currentPath] {
                 currentNode = existingNode
@@ -77,13 +46,13 @@ final class TopicTree {
                 currentNode = newNode
             }
 
-            if index == parts.count - 1 {
+            if index == levels.count - 1 {
                 currentNode.messages.append(message)
             }
         }
 
-        // Increment cachedTotalCount on each ancestor + leaf
-        incrementAncestorCounts(for: message.topic, by: 1)
+        // Increment retained and received counts on each ancestor + leaf
+        incrementAncestorCounts(for: message.topic, by: 1, received: true)
 
         if nodeCache.count > maxNodes {
             evictEmptyNodes()
@@ -96,12 +65,12 @@ final class TopicTree {
         var topicIncrements: [String: Int] = [:]
 
         for message in batch {
-            let parts = message.topic.split(separator: "/").map(String.init)
-            var currentPath = ""
             var currentNode = root
+            let levels = Self.levels(of: message.topic)
 
-            for (index, part) in parts.enumerated() {
-                currentPath = currentPath.isEmpty ? part : "\(currentPath)/\(part)"
+            for (index, level) in levels.enumerated() {
+                let part = level.name
+                let currentPath = level.path
 
                 if let existingNode = nodeCache[currentPath] {
                     currentNode = existingNode
@@ -113,7 +82,7 @@ final class TopicTree {
                     currentNode = newNode
                 }
 
-                if index == parts.count - 1 {
+                if index == levels.count - 1 {
                     currentNode.messages.append(message)
                 }
             }
@@ -126,9 +95,9 @@ final class TopicTree {
             node.children.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         }
 
-        // Batch-update cachedTotalCount for all affected topics
+        // Batch-update retained and received counts for all affected topics
         for (topic, count) in topicIncrements {
-            incrementAncestorCounts(for: topic, by: count)
+            incrementAncestorCounts(for: topic, by: count, received: true)
         }
 
         if nodeCache.count > maxNodes {
@@ -179,12 +148,11 @@ final class TopicTree {
     }
 
     func ensureTopic(_ path: String) {
-        let parts = path.split(separator: "/").map(String.init)
-        var currentPath = ""
         var currentNode = root
 
-        for part in parts {
-            currentPath = currentPath.isEmpty ? part : "\(currentPath)/\(part)"
+        for level in Self.levels(of: path) {
+            let part = level.name
+            let currentPath = level.path
 
             if let existingNode = nodeCache[currentPath] {
                 currentNode = existingNode
@@ -223,7 +191,7 @@ final class TopicTree {
     }
 
     private func parentPath(for path: String) -> String? {
-        let parts = path.split(separator: "/")
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
         guard parts.count > 1 else { return nil }
         return parts.dropLast().joined(separator: "/")
     }
@@ -235,17 +203,22 @@ final class TopicTree {
         }
     }
 
-    private func incrementAncestorCounts(for topicPath: String, by count: Int) {
+    /// `received` is set only when messages arrive, so the monotonic received counters are not
+    /// re-added when retained counts are rebuilt after trimming.
+    private func incrementAncestorCounts(for topicPath: String, by count: Int, received: Bool = false) {
         root.cachedTotalCount += count
-        let parts = topicPath.split(separator: "/")
-        var currentPath = ""
-        for part in parts {
-            currentPath = currentPath.isEmpty ? String(part) : "\(currentPath)/\(part)"
-            if let node = nodeCache[currentPath] {
+        if received { root.receivedTotalCount += count }
+        let levels = Self.levels(of: topicPath)
+        for (index, level) in levels.enumerated() {
+            if let node = nodeCache[level.path] {
                 let wasZero = node.cachedTotalCount == 0
                 node.cachedTotalCount += count
                 if wasZero && node.cachedTotalCount > 0 {
                     _activeNodeCount += 1
+                }
+                if received {
+                    node.receivedTotalCount += count
+                    if index == levels.count - 1 { node.receivedCount += count }
                 }
             }
         }
@@ -272,11 +245,8 @@ final class TopicTree {
 
     private func decrementAncestorCounts(for topicPath: String, by count: Int) {
         root.cachedTotalCount -= count
-        let parts = topicPath.split(separator: "/")
-        var currentPath = ""
-        for part in parts {
-            currentPath = currentPath.isEmpty ? String(part) : "\(currentPath)/\(part)"
-            if let node = nodeCache[currentPath] {
+        for level in Self.levels(of: topicPath) {
+            if let node = nodeCache[level.path] {
                 let wasPositive = node.cachedTotalCount > 0
                 node.cachedTotalCount -= count
                 if wasPositive && node.cachedTotalCount <= 0 {

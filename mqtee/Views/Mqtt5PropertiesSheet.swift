@@ -70,7 +70,8 @@ struct Mqtt5PropertiesSheet: View {
                             Button {
                                 userProperties.remove(at: index)
                             } label: {
-                                Image(systemName: "minus.circle")
+                                Label("Remove User Property", systemImage: "minus.circle")
+                                    .labelStyle(.iconOnly)
                                     .foregroundStyle(.red)
                             }
                             .buttonStyle(.borderless)
@@ -94,7 +95,7 @@ struct Mqtt5PropertiesSheet: View {
     }
 }
 
-final class XMLValidationDelegate: NSObject, XMLParserDelegate {}
+nonisolated final class XMLValidationDelegate: NSObject, XMLParserDelegate {}
 
 final class XMLPrettifyDelegate: NSObject, XMLParserDelegate {
     var result = ""

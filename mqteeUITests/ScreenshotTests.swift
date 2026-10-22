@@ -195,7 +195,9 @@ final class ScreenshotTests: XCTestCase {
             try screenshot.pngRepresentation.write(to: outputFile, options: .atomic)
             print("Saved screenshot to \(outputFile.path)")
         } catch {
-            XCTFail("Failed to write screenshot file for \(name): \(error)")
+            // The screenshot is already attached to the result bundle; the source-tree copy is only a
+            // convenience for runs on the developer machine and is unwritable in sandboxed/remote runners.
+            print("Could not save screenshot copy for \(name): \(error)")
         }
     }
 }

@@ -11,20 +11,17 @@ struct MessageDetailView: View {
     #if !os(macOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var splitRatio: CGFloat = 0.5
-    @State private var dragStartRatio: CGFloat = 0.5
     @State private var totalHeight: CGFloat = 0
     @State private var showStatusSheet: Bool = false
     #endif
 
-    @State private var currentMessages: [MQTTMessage] = []
-    @State private var filteredMessages: [MQTTMessage] = []
-    @State private var topicColors: [String: Color] = [:]
+    @State private var list = MessageListState()
 
     private var listSelectionID: Binding<UUID?> {
         Binding(
             get: { selectedMessage?.id },
             set: { newID in
-                selectedMessage = newID.flatMap { id in filteredMessages.first { $0.id == id } }
+                selectedMessage = newID.flatMap { id in list.filteredMessages.first { $0.id == id } }
             }
         )
     }
@@ -76,6 +73,9 @@ struct MessageDetailView: View {
                         }
                         .contentShape(Rectangle())
                         .onTapGesture { showStatusSheet = true }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityValue(session.statusLabel)
+                        .accessibilityAddTraits(.isButton)
                     }
 
                     ToolbarItem(placement: .primaryAction) {
@@ -129,7 +129,7 @@ struct MessageDetailView: View {
                         messageListView
                             .frame(height: listHeight)
 
-                        resizableDivider
+                        SplitResizeHandle(splitRatio: $splitRatio, totalHeight: totalHeight)
 
                         payloadView
                             .frame(height: payloadHeight)
@@ -161,9 +161,9 @@ struct MessageDetailView: View {
 
                     Group {
                         if messageFilter.isActive {
-                            Label("\(filteredMessages.count) / \(currentMessages.count) messages", systemImage: "envelope")
+                            Label("\(list.filteredMessages.count) / \(list.currentMessages.count) messages", systemImage: "envelope")
                         } else {
-                            Label("\(currentMessages.count) messages", systemImage: "envelope")
+                            Label("\(list.currentMessages.count) messages", systemImage: "envelope")
                         }
                     }
                     .font(.caption)
@@ -201,41 +201,11 @@ struct MessageDetailView: View {
             Divider()
             ScrollViewReader { proxy in
                 List(selection: listSelectionID) {
-                    ForEach(filteredMessages) { message in
-                        MessageRowView(message: message, color: topicColors[message.topic] ?? .secondary)
+                    ForEach(list.filteredMessages) { message in
+                        MessageRowView(message: message, color: list.topicColors[message.topic] ?? .secondary)
                             .transaction { $0.animation = nil }
                             .tag(message.id)
-                            .contextMenu {
-                                Button("Publish to this topic", systemImage: "paperplane") {
-                                    session.preparePublishFromContext(topic: message.topic, payload: message.payloadString)
-                                }
-
-                                Divider()
-
-                                Button("Copy Message", systemImage: "doc.on.doc") {
-                                    let text = MessageExportService.formatAsMarkdown(message)
-                                    MessageExportService.copyToClipboard(text)
-                                }
-
-                                Menu("Copy Message As...") {
-                                    Button("Markdown") {
-                                        let text = MessageExportService.formatAsMarkdown(message)
-                                        MessageExportService.copyToClipboard(text)
-                                    }
-                                    Button("JSON") {
-                                        let text = MessageExportService.formatAsJSON(message)
-                                        MessageExportService.copyToClipboard(text)
-                                    }
-                                    Button("CSV") {
-                                        let text = MessageExportService.formatMessagesAsCSV([message])
-                                        MessageExportService.copyToClipboard(text)
-                                    }
-                                }
-
-                                Button("Copy Payload Only", systemImage: "text.document") {
-                                    MessageExportService.copyToClipboard(message.payloadString)
-                                }
-                            }
+                            .contextMenu { MessageContextMenu(message: message, session: session) }
                     }
                     Color.clear
                         .frame(height: 1)
@@ -244,6 +214,9 @@ struct MessageDetailView: View {
                         .listRowInsets(EdgeInsets())
                     }
                 .listStyle(.plain)
+                // A List that first renders empty and is then populated keeps stale (single-line) row heights on macOS;
+                // recreating it when it flips between empty and populated makes rows measure at full height.
+                .id(list.filteredMessages.isEmpty)
                 .defaultScrollAnchor(.bottom)
                 .onChange(of: node) { _, _ in
                     selectedMessage = nil
@@ -263,7 +236,7 @@ struct MessageDetailView: View {
                 .onChange(of: autoScroll) { oldValue, newValue in
                     if !oldValue && newValue {
                         updateMessages()
-                        if !filteredMessages.isEmpty {
+                        if !list.filteredMessages.isEmpty {
                             Task { @MainActor in
                                 proxy.scrollTo("bottom-anchor", anchor: .bottom)
                             }
@@ -274,7 +247,7 @@ struct MessageDetailView: View {
                     PendingCountOverlay(
                         selectedNode: node,
                         showAllDescendants: showAllDescendants,
-                        currentCount: currentMessages.count,
+                        shownReceivedCount: list.shownReceivedCount,
                         autoScroll: autoScroll,
                         onShowNew: { updateMessages() },
                         onAutoScroll: {
@@ -297,86 +270,11 @@ struct MessageDetailView: View {
         PayloadDisplayView(message: selectedMessage)
     }
 
-    #if !os(macOS)
-    private var resizableDivider: some View {
-        Rectangle()
-            .fill(.clear)
-            .frame(height: 12)
-            .frame(maxWidth: .infinity)
-            .contentShape(Rectangle())
-            .overlay(alignment: .top) {
-                LinearGradient(
-                    colors: [.black.opacity(0.1), .clear],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .frame(height: 4)
-                .allowsHitTesting(false)
-            }
-            .overlay {
-                Capsule()
-                    .fill(.quaternary)
-                    .frame(width: 36, height: 4)
-            }
-            .gesture(
-                DragGesture(coordinateSpace: .global)
-                    .onChanged { value in
-                        let newRatio = dragStartRatio + value.translation.height / totalHeight
-                        splitRatio = min(max(newRatio, 0.15), 0.85)
-                    }
-                    .onEnded { _ in
-                        dragStartRatio = splitRatio
-                    }
-            )
-    }
-    #endif
-
     private func updateMessages() {
-        guard let node else {
-            currentMessages = []
-            filteredMessages = []
-            topicColors = [:]
-            return
-        }
-        let current = session.messages(for: node.fullPath, includeDescendants: showAllDescendants)
-        let previousCount = currentMessages.count
-        guard current.count != previousCount else { return }
-
-        if previousCount == 0 || current.count < previousCount {
-            let filtered = messageFilter.isActive ? messageFilter.apply(to: current) : current
-            var colors: [String: Color] = [:]
-            for message in filtered {
-                if colors[message.topic] == nil {
-                    colors[message.topic] = session.colorForTopic(message.topic)
-                }
-            }
-            currentMessages = current
-            filteredMessages = filtered
-            topicColors = colors
-        } else {
-            let newMessages = Array(current[previousCount...])
-            let newFiltered = messageFilter.isActive ? messageFilter.apply(to: newMessages) : newMessages
-            currentMessages = current
-            if !newFiltered.isEmpty {
-                for message in newFiltered {
-                    if topicColors[message.topic] == nil {
-                        topicColors[message.topic] = session.colorForTopic(message.topic)
-                    }
-                }
-                filteredMessages.append(contentsOf: newFiltered)
-            }
-        }
+        list.refresh(node: node, includeDescendants: showAllDescendants, filter: messageFilter, session: session)
     }
 
     private func applyFilter() {
-        let filtered = messageFilter.isActive ? messageFilter.apply(to: currentMessages) : currentMessages
-        var colors: [String: Color] = [:]
-        for message in filtered {
-            if colors[message.topic] == nil {
-                colors[message.topic] = session.colorForTopic(message.topic)
-            }
-        }
-        filteredMessages = filtered
-        topicColors = colors
+        list.applyFilter(messageFilter, session: session)
     }
 }

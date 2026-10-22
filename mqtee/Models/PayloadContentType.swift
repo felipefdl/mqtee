@@ -1,6 +1,6 @@
 import Foundation
 
-enum PayloadContentType: String {
+nonisolated enum PayloadContentType: String, Sendable {
     case json = "JSON"
     case xml = "XML"
     case plainText = "Plain Text"

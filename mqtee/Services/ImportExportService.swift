@@ -47,13 +47,23 @@ enum ImportExportService {
 
     // MARK: - Import (File Parsing)
 
-    static func parseImportFile(at url: URL) -> ImportResult? {
+    /// Returns nil when the file is not a valid export; throws when a connection has out-of-range numeric settings.
+    static func parseImportFile(at url: URL) throws -> ImportResult? {
         guard let data = try? Data(contentsOf: url) else { return nil }
 
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
 
         guard let document = try? decoder.decode(ExportDocument.self, from: data) else { return nil }
+
+        for exported in document.connections {
+            let connection = exported.connection
+            _ = try MQTTConnectionConfigError.validate(
+                port: connection.port,
+                keepAlive: connection.keepAlive,
+                sessionExpiry: connection.sessionExpiry
+            )
+        }
 
         return ImportResult(document: document, fileURL: url)
     }

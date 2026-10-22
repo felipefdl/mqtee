@@ -33,6 +33,11 @@ final class SessionStore {
     var reconnectTask: Task<Void, Never>?
     var reconnectAttempt: Int = 0
     var isReconnecting: Bool = false
+    /// Identifies the current connect attempt; bumped whenever an attempt starts or is invalidated.
+    var connectGeneration: Int = 0
+    /// Set when the user cancels reconnecting (or closes the session); late callbacks from the
+    /// abandoned attempt must neither reconnect nor reschedule. Cleared by the next `connect()`.
+    var reconnectCancelled: Bool = false
     // Settings are read from UserDefaults at access time, not via @AppStorage,
     // because SessionStore is not a View. Changes in Settings take effect on next access.
     var autoReconnectEnabled: Bool {
@@ -58,6 +63,7 @@ final class SessionStore {
         let batchThreshold = UserDefaults.standard.integer(forKey: "batchLogThreshold")
         self.batchLogThreshold = batchThreshold > 0 ? batchThreshold : 20
         mqttService.delegate = self
+        mqttService.configureIngress(maxMessages: self.maxMessages, connectionId: connection.id)
     }
 
     func applyPersistedData(session: PersistedSession?, publishTabs: PersistedPublishTabs?) {
@@ -108,6 +114,9 @@ final class SessionStore {
         for message in messages {
             messagesByTopic[message.topic, default: []].append(message)
         }
+        // Drop colors of topics that no longer have retained messages; live topics keep theirs
+        // (colors are derived only from subscriptions, which clear the cache when they change).
+        topicColorCache = topicColorCache.filter { messagesByTopic[$0.key] != nil }
     }
 
     func ensureSubscriptionTopicsInTree() {

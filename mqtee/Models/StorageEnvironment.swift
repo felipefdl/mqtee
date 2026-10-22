@@ -5,7 +5,7 @@
 
 import Foundation
 
-enum StorageEnvironment {
+nonisolated enum StorageEnvironment {
     static let isRunningTests: Bool = {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
     }()

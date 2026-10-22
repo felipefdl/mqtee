@@ -12,7 +12,7 @@ Root public files: `README.md` (logo, sections, footer), `LICENSE.md` (Apache-2.
 - **iOS/iPadOS**: 26.0+
 - **Xcode**: 26.0+
 - **Swift**: 6.0+
-- **Rust**: 1.85.0+ (edition 2024)
+- **Rust**: 1.87.0+ (edition 2024)
 - **cargo-bundle-licenses**: For generating open source license attribution
 
 ## Latest Versions Policy
@@ -71,7 +71,8 @@ mqtee/
       Connection.swift       # MQTT broker connection config, MQTTVersion, QoSLevel, LastWillSettings
       ConnectionStore.swift  # @Observable store with iCloud sync for connections and folders
       SessionStore.swift     # Active session state: subscriptions, messages, topic tree, publish tabs
-      TopicTree.swift        # Hierarchical topic organization with TopicNode
+      TopicTree.swift        # Hierarchical topic organization and retention trimming
+      TopicNode.swift        # Tree node: retained counts plus monotonic received counts for "Show N new"
       MQTTMessage.swift      # Message model, Subscription with MQTT 5 options, SubscriptionColor
       LogEntry.swift         # Structured event log entry with level, category, direction
       LogStore.swift         # Global singleton log store (max 1,000 entries)
@@ -99,6 +100,7 @@ mqtee/
       TreeView.swift               # Topic tree browser + subscription list tabs
       TopicNodeRow.swift           # Topic node and subscription root node row views
       MessageDetailView.swift      # Full message detail view with payload display
+      MessageListState.swift       # Shared message list refresh/filter state for detail and tree panels
       MessageRowView.swift         # Compact message row for topic tree lists
       PayloadDisplayView.swift     # Async payload rendering (JSON, XML, hex, text)
       ConnectionEditorView.swift   # Connection config sheet (TLS, auth, LWT)
@@ -130,7 +132,7 @@ mqtee/
     build-xcframework.sh     # Universal binary build script (arm64 + x86_64)
     src/
       lib.rs                 # Library entry, logging init
-      client.rs              # MqttClient: dual-protocol (v3.1.1/v5) async event loop, command pattern, TLS
+      client/                # MqttClient: shared runtime, event loop (mod.rs), commands.rs, tls.rs, v311.rs, v5.rs
       types.rs               # Type definitions and conversions (MqttMessage, ConnectionEvent, v5 properties)
       error.rs               # MqttError enum with thiserror
   mqteeTests/                # Swift unit tests (Swift Testing framework)
@@ -161,19 +163,21 @@ mqtee/
 
 ### Dependencies
 - `rumqttc` 0.25 - MQTT 3.1.1 and 5.0 client with rustls TLS (v5 via `rumqttc::v5` module)
-- `tokio` 1 - Async runtime (rt-multi-thread, sync, time, macros)
-- `uniffi` 0.28 - Swift FFI generation (proc-macro mode, no UDL)
-- `rustls` 0.23 - TLS implementation
-- `rustls-pemfile` 2 - PEM certificate parsing
-- `webpki-roots` 0.26 - Root CA certificates
+- `tokio` 1.54 - Async runtime (rt-multi-thread, sync, time, macros)
+- `uniffi` 0.32 - Swift FFI generation (proc-macro mode, no UDL)
+- `rustls` 0.23 - TLS implementation; PEM parsing via `rustls::pki_types::pem::PemObject`
+- `rustls-platform-verifier` 0.7 - Default server trust from the OS trust store (Security.framework)
 - `thiserror` 2 - Error handling
 - `tracing` / `tracing-subscriber` - Logging
 
 ### Architecture
 - Dual-protocol client: `ClientInner` enum with `V311`/`V5` variants, each wrapping separate `rumqttc` client+eventloop
+- One shared 2-worker tokio runtime for all clients; each client's loop ends when its `MqttClient` is dropped
 - Command pattern via `tokio::sync::mpsc` channel for thread-safe operations
-- `biased` select in event loop: commands first, events second
-- Custom `InsecureCertVerifier` for insecure TLS mode
+- `biased` select in event loop: commands first, events second. Commands reach rumqttc through non-blocking `try_*` calls: the same task drains rumqttc's request queue, so awaiting a full queue deadlocks
+- Disconnect drives the event loop until DISCONNECT is written (bounded timeout), so the broker does not fire the Last Will
+- TLS trust: user-supplied CA pins trust to that CA; otherwise `rustls-platform-verifier`. Custom `InsecureCertVerifier` for insecure TLS mode
+- `publish` takes `&[u8]`: UniFFI passes Swift `Data` without copying
 - Events delivered to Swift via `MqttEventHandler` callback interface
 - MQTT v5 features: session expiry, subscription options (noLocal, retainAsPublished, retainHandling), publish properties (contentType, responseTopic, correlationData, messageExpiryInterval, payloadFormatIndicator), ConnAck server capabilities
 
@@ -224,7 +228,7 @@ mqtee/
 
 ## Rust Conventions
 
-- Edition 2024, minimum version 1.85.0
+- Edition 2024, minimum version 1.87.0 (UniFFI 0.32 MSRV)
 - Run clippy with `-D warnings`
 - rustfmt with `max_width = 120` and `tab_spaces = 2`
 - Use UniFFI for Swift bindings

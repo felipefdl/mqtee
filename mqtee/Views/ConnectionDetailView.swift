@@ -33,10 +33,12 @@ struct ConnectionDetailView: View {
                             .frame(width: 48, height: 48)
                     }
 
+                    #if os(macOS)
                     Text(connection.name)
                         .font(.title)
                         .fontWeight(.semibold)
                         .lineLimit(1)
+                    #endif
 
                     Text(connection.subtitle)
                         .font(.body)
@@ -100,6 +102,9 @@ struct ConnectionDetailView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle(connection.name)
+        #if !os(macOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button(action: { onEdit(connection) }) {

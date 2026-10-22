@@ -6,10 +6,23 @@
 import SwiftUI
 
 extension ConnectionEditorView {
-    func saveConnection() {
-        let portNumber = Int(port) ?? 1883
-        let keepAliveSeconds = Int(keepAlive) ?? 60
-        let sessionExpirySeconds = Int(sessionExpiry)
+    /// Validates and saves. Returns false (and sets `saveErrorMessage`) when a numeric setting is out of range.
+    @discardableResult
+    func saveConnection() -> Bool {
+        let ranges: MQTTConnectionConfigError.Ranges
+        do {
+            ranges = try MQTTConnectionConfigError.validate(
+                port: port,
+                keepAlive: keepAlive,
+                sessionExpiry: mqttVersion == .v5 ? sessionExpiry : ""
+            )
+        } catch {
+            saveErrorMessage = error.localizedDescription
+            return false
+        }
+        let portNumber = Int(ranges.port)
+        let keepAliveSeconds = Int(ranges.keepAlive)
+        let sessionExpirySeconds = mqttVersion == .v5 ? ranges.sessionExpiry.map(Int.init) : Int(sessionExpiry)
         let connectionId = existingConnection?.id ?? UUID()
 
         let lastWillConfig = LastWillSettings(
@@ -78,6 +91,7 @@ extension ConnectionEditorView {
                 await FaviconService.shared.fetchFavicon(for: connectionId, host: host)
             }
         }
+        return true
     }
 
     func updatePortForTLS() {

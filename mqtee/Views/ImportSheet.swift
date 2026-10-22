@@ -120,9 +120,15 @@ struct ImportSheet: View {
                     }
                 }
             }
+            #if os(macOS)
+            .frame(maxHeight: .infinity)
+            #else
             .frame(maxHeight: 180)
+            #endif
 
-            Divider()
+            if hasCredentials || hasFolders {
+                Divider()
+            }
 
             // Options
             if hasCredentials {
@@ -143,7 +149,11 @@ struct ImportSheet: View {
             }
         }
         .padding(16)
+        #if os(macOS)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        #else
         .frame(maxWidth: .infinity, alignment: .leading)
+        #endif
     }
 
     // MARK: - Footer

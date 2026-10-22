@@ -157,7 +157,7 @@ struct PublishPanelContent: View {
             Button {
                 session.addPublishTab()
             } label: {
-                Image(systemName: "plus")
+                Label("New Tab", systemImage: "plus").labelStyle(.iconOnly)
             }
             .buttonStyle(.borderless)
             .tint(.primary)
@@ -173,7 +173,7 @@ struct PublishPanelContent: View {
                     showCloseAllConfirmation = true
                 }
             } label: {
-                Image(systemName: "trash")
+                Label("Delete Tab", systemImage: "trash").labelStyle(.iconOnly)
             } primaryAction: {
                 if let activeId = session.activePublishTabId {
                     session.removePublishTab(activeId)
@@ -190,6 +190,7 @@ struct PublishPanelContent: View {
                     onTogglePin()
                 } label: {
                     Image(systemName: isPinned ? "arrow.up.forward.square" : "rectangle.bottomhalf.inset.filled")
+                        .accessibilityLabel(isPinned ? "Float as popover" : "Dock as panel")
                 }
                 .buttonStyle(.borderless)
                 .tint(.primary)
@@ -241,20 +242,7 @@ struct PublishPanelContent: View {
 
             payloadEditor
 
-            HStack {
-                Picker("QoS", selection: $qos) {
-                    ForEach(QoSLevel.allCases, id: \.self) { level in
-                        Text("\(level.rawValue) - \(level.description)").tag(level)
-                    }
-                }
-                .fixedSize()
-                .tint(.primary)
-
-                Spacer()
-
-                Toggle("Retain", isOn: $retain)
-                    .fixedSize()
-            }
+            qosRetainRow
 
             if session.connection.mqttVersion == .v5 {
                 Button {

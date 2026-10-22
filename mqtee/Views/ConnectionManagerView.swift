@@ -109,10 +109,14 @@ struct ConnectionManagerView: View {
                     guard let url = urls.first else { return }
                     let accessed = url.startAccessingSecurityScopedResource()
                     defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-                    if let parsed = ImportExportService.parseImportFile(at: url) {
-                        importResult = parsed
-                    } else {
-                        importError = String(localized: "The selected file is not a valid MQTee export.", comment: "Import error")
+                    do {
+                        if let parsed = try ImportExportService.parseImportFile(at: url) {
+                            importResult = parsed
+                        } else {
+                            importError = String(localized: "The selected file is not a valid MQTee export.", comment: "Import error")
+                        }
+                    } catch {
+                        importError = error.localizedDescription
                     }
                 case .failure(let error):
                     importError = error.localizedDescription

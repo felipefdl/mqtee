@@ -5,7 +5,7 @@
 
 import Foundation
 
-enum PublishPayloadFormat: String, CaseIterable, Codable {
+nonisolated enum PublishPayloadFormat: String, CaseIterable, Codable, Sendable {
     case text = "Text"
     case json = "JSON"
     case xml = "XML"
@@ -27,7 +27,7 @@ enum PublishPayloadFormat: String, CaseIterable, Codable {
     }
 }
 
-enum PayloadFormatIndicatorOption: Int, CaseIterable, Codable, Hashable {
+nonisolated enum PayloadFormatIndicatorOption: Int, CaseIterable, Codable, Hashable, Sendable {
     case unspecified = -1
     case bytes = 0
     case utf8 = 1
@@ -41,7 +41,7 @@ enum PayloadFormatIndicatorOption: Int, CaseIterable, Codable, Hashable {
     }
 }
 
-struct PublishTab: Identifiable, Hashable, Codable {
+nonisolated struct PublishTab: Identifiable, Hashable, Codable, Sendable {
     let id: UUID
     var name: String?
     var topic: String
@@ -124,7 +124,7 @@ struct PublishTab: Identifiable, Hashable, Codable {
     }
 }
 
-struct PersistedPublishTabs: Codable {
+nonisolated struct PersistedPublishTabs: Codable, Sendable {
     let connectionId: UUID
     var tabs: [PublishTab]
     var activeTabId: UUID?

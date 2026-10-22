@@ -36,7 +36,7 @@ struct TopicNodeRow: View {
                 .foregroundStyle(session.colorForTopic(node.fullPath))
                 .contentTransition(.symbolEffect(.replace))
 
-            Text(node.name)
+            Text(node.displayName)
                 .lineLimit(1)
 
             Spacer()

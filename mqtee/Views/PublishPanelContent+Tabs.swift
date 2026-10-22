@@ -37,13 +37,13 @@ extension PublishPanelContent {
                 }
             }
         }
-        #if os(macOS)
         .listStyle(.plain)
-        #else
-        .listStyle(.plain)
-        #endif
         .environment(\.defaultMinListRowHeight, 20)
+        #if os(macOS)
         .frame(width: 110)
+        #else
+        .frame(width: 150)
+        #endif
     }
 
     var tabPickerBar: some View {

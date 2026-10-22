@@ -33,36 +33,67 @@ extension ConnectionEditorView {
                 updatePortForTLS()
             }
 
+            #if os(macOS)
             TextField("Name", text: $name, prompt: Text("My Connection"))
 
             HStack {
                 TextField("Host", text: $host, prompt: Text("broker.example.com"))
                     .textContentType(.none)
                     .autocorrectionDisabled()
-                    #if !os(macOS)
-                    .textInputAutocapitalization(.never)
-                    #endif
 
                 TextField("Port", text: $port, prompt: Text("1883"))
                     .frame(width: 70)
             }
+            #else
+            LabeledContent("Name") {
+                TextField("Name", text: $name, prompt: Text("My Connection"))
+                    .multilineTextAlignment(.trailing)
+                    .autocorrectionDisabled()
+            }
+
+            LabeledContent("Host") {
+                TextField("Host", text: $host, prompt: Text("broker.example.com"))
+                    .multilineTextAlignment(.trailing)
+                    .textContentType(.none)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.URL)
+            }
+
+            LabeledContent("Port") {
+                TextField("Port", text: $port, prompt: Text("1883"))
+                    .multilineTextAlignment(.trailing)
+                    .keyboardType(.numberPad)
+            }
+            #endif
         }
     }
 
     var clientSection: some View {
         Section {
+            #if os(macOS)
             HStack {
                 TextField("Client ID", text: $clientId, prompt: Text("Auto-generated if empty"))
                     .textContentType(.none)
                     .autocorrectionDisabled()
-                    #if !os(macOS)
-                    .textInputAutocapitalization(.never)
-                    #endif
 
                 Button("Generate") {
                     clientId = "mqtee-\(UUID().uuidString.prefix(8))"
                 }
             }
+            #else
+            LabeledContent("Client ID") {
+                TextField("Client ID", text: $clientId, prompt: Text("Auto-generated"))
+                    .multilineTextAlignment(.trailing)
+                    .textContentType(.none)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+            }
+
+            Button("Generate") {
+                clientId = "mqtee-\(UUID().uuidString.prefix(8))"
+            }
+            #endif
         } header: {
             Text("Client")
         } footer: {

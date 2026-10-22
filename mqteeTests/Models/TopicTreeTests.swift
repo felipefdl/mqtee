@@ -150,4 +150,34 @@ struct TopicTreeTests {
 
         #expect(node.latestMessage?.id == msg2.id)
     }
+
+    @Test("Topics differing only by empty levels map to distinct nodes")
+    func emptyLevelsAreDistinct() {
+        let tree = TopicTree()
+        let topics = ["/a", "a", "a//b", "a/b"]
+        tree.addMessages(topics.map { MQTTMessage(topic: $0, payloadString: "x") })
+
+        for topic in topics {
+            let node = tree.findNode(at: topic)
+            #expect(node?.fullPath == topic)
+            #expect(node?.messages.count == 1)
+            #expect(node?.messages.first?.topic == topic)
+        }
+        #expect(tree.root.totalMessageCount == 4)
+        #expect(tree.findNode(at: "a")?.totalMessageCount == 3)
+    }
+
+    @Test("addMessage with empty level keeps exact path and parent")
+    func emptyLevelParentPath() {
+        let tree = TopicTree()
+        tree.addMessage(MQTTMessage(topic: "a//b", payloadString: "x"))
+
+        let middle = tree.findNode(at: "a/")
+        #expect(middle?.name == "")
+        #expect(middle?.children.first?.fullPath == "a//b")
+
+        tree.removeTopic("a/")
+        #expect(tree.findNode(at: "a//b") == nil)
+        #expect(tree.findNode(at: "a")?.children.isEmpty == true)
+    }
 }

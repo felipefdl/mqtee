@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct XMLHighlighter {
+nonisolated struct XMLHighlighter {
     private static let maxHighlightSize = 100_000
 
     static func highlight(_ xmlString: String, theme: SyntaxTheme) -> AttributedString {

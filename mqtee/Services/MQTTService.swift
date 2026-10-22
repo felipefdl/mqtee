@@ -21,11 +21,11 @@ final class MQTTService: MqttEventHandler {
 
     private var client: MqttClient?
 
-    // Batching: collect messages on a background serial queue,
-    // dispatch a single Task to the main actor per batch interval.
-    let batchQueue = DispatchQueue(label: "mqtee.message-batch")
-    var pendingMessages: [MQTTMessage] = []
-    var batchFlushScheduled = false
+    // Ingress: events arrive on a Rust thread; they are queued in a bounded, ordered buffer
+    // and drained by at most one outstanding main-actor task.
+    let ingress = MQTTIngressBuffer()
+    /// Connection used to attribute ingress drop logs; set once from the main actor.
+    var ingressConnectionId: UUID?
 
     var isConnected: Bool {
         client?.isConnected() ?? false
@@ -45,12 +45,14 @@ final class MQTTService: MqttEventHandler {
         try client?.disconnect()
     }
 
+    func configureIngress(maxMessages: Int, connectionId: UUID) {
+        ingress.setLimit(maxMessages)
+        ingressConnectionId = connectionId
+    }
+
     func teardown() {
         client = nil
-        batchQueue.async { [weak self] in
-            self?.pendingMessages.removeAll()
-            self?.batchFlushScheduled = false
-        }
+        ingress.reset()
     }
 
     func subscribe(topics: [MQTTSubscriptionConfig]) throws {

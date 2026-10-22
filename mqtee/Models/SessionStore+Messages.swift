@@ -11,13 +11,15 @@ extension SessionStore {
         messages.append(message)
         messagesByTopic[message.topic, default: []].append(message)
         invalidateMessageCache()
+        // Add before trimming so the tree drops exactly what `messages` drops, including new
+        // messages already past the retention window.
+        topicTree.addMessage(message)
         if messages.count > maxMessages {
             messages.removeFirst(messages.count - maxMessages)
             rebuildMessagesByTopic()
             let survivingIds = Set(messages.map(\.id))
             topicTree.trimMessages(retaining: survivingIds)
         }
-        topicTree.addMessage(message)
         topicTree.treeVersion += 1
         messageVersion += 1
     }
@@ -36,13 +38,13 @@ extension SessionStore {
             messagesByTopic[message.topic, default: []].append(message)
         }
         invalidateMessageCache()
+        topicTree.addMessages(filtered, incrementVersion: false)
         if messages.count > maxMessages {
             messages.removeFirst(messages.count - maxMessages)
             rebuildMessagesByTopic()
             let survivingIds = Set(messages.map(\.id))
             topicTree.trimMessages(retaining: survivingIds)
         }
-        topicTree.addMessages(filtered, incrementVersion: false)
         scheduleUIFlush()
     }
 
@@ -92,7 +94,7 @@ extension SessionStore {
         messageFlushTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(200))
             guard !Task.isCancelled else { return }
-            await self?.flushMessageBuffer()
+            self?.flushMessageBuffer()
         }
     }
 
@@ -102,7 +104,7 @@ extension SessionStore {
         uiFlushTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(150))
             guard !Task.isCancelled else { return }
-            await self?.flushUIUpdate()
+            self?.flushUIUpdate()
         }
     }
 
