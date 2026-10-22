@@ -34,6 +34,11 @@ echo ""
 
 cd "$RUST_DIR"
 
+# Match the app's deployment targets. Without these, rustc and cc (aws-lc-sys C code) target the
+# installed SDK's OS version, so the linked objects can require a newer OS than the app supports.
+export MACOSX_DEPLOYMENT_TARGET=26.0
+export IPHONEOS_DEPLOYMENT_TARGET=26.0
+
 # Ensure build targets are installed
 echo "Ensuring build targets are installed..."
 rustup target add aarch64-apple-darwin 2>/dev/null || true
@@ -103,7 +108,7 @@ fi
 echo ""
 echo "Generating Swift bindings..."
 cargo run --bin uniffi-bindgen generate \
-    --library target/aarch64-apple-darwin/release/libmqtee_core.a \
+    target/aarch64-apple-darwin/release/libmqtee_core.a \
     --language swift \
     --out-dir "$OUTPUT_DIR/Sources"
 

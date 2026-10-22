@@ -1,9 +1,10 @@
-use std::io::BufReader;
 use std::sync::Arc;
 
 use rumqttc::tokio_rustls::rustls;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use rustls_platform_verifier::BuilderVerifierExt;
 use tracing::warn;
 
 use crate::error::MqttError;
@@ -16,57 +17,54 @@ pub(super) fn create_tls_config(config: &ConnectionConfig) -> Result<rumqttc::Tl
     let builder = rustls::ClientConfig::builder()
       .dangerous()
       .with_custom_certificate_verifier(Arc::new(InsecureCertVerifier));
-
-    if let Some((certs, key)) = parse_client_cert_key(config)? {
-      builder
-        .with_client_auth_cert(certs, key)
-        .map_err(|e| MqttError::TlsError(e.to_string()))?
-    } else {
-      builder.with_no_client_auth()
-    }
-  } else {
+    with_client_auth(builder, config)?
+  } else if let Some(ca_cert) = &config.ca_certificate {
+    // A user-supplied CA pins trust to that CA alone (private brokers, self-signed chains).
     let mut root_store = rustls::RootCertStore::empty();
-
-    if let Some(ca_cert) = &config.ca_certificate {
-      let mut reader = BufReader::new(ca_cert.as_slice());
-      let certs = rustls_pemfile::certs(&mut reader).collect::<Vec<_>>();
-
-      for cert_result in certs {
-        match cert_result {
-          Ok(cert) => {
-            root_store.add(cert).map_err(|e| MqttError::TlsError(e.to_string()))?;
-          }
-          Err(e) => {
-            warn!("Skipping unparseable certificate in chain: {}", e);
-          }
-        }
+    for cert_result in CertificateDer::pem_slice_iter(ca_cert) {
+      match cert_result {
+        Ok(cert) => root_store.add(cert).map_err(|e| MqttError::TlsError(e.to_string()))?,
+        Err(e) => warn!("Skipping unparseable certificate in chain: {}", e),
       }
-    } else {
-      root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    }
+    if root_store.is_empty() {
+      return Err(MqttError::TlsError("No valid certificate found in CA file".to_string()));
     }
 
-    if let Some((certs, key)) = parse_client_cert_key(config)? {
-      rustls::ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_client_auth_cert(certs, key)
-        .map_err(|e| MqttError::TlsError(e.to_string()))?
-    } else {
-      rustls::ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth()
-    }
+    with_client_auth(
+      rustls::ClientConfig::builder().with_root_certificates(root_store),
+      config,
+    )?
+  } else {
+    // Default trust comes from the OS (Security.framework): system roots, user and MDM-installed
+    // CAs, and Apple's revocation and distrust decisions, updated with the OS instead of the app.
+    let builder = rustls::ClientConfig::builder()
+      .with_platform_verifier()
+      .map_err(|e| MqttError::TlsError(e.to_string()))?;
+    with_client_auth(builder, config)?
   };
 
   Ok(rumqttc::TlsConfiguration::Rustls(Arc::new(tls_config)))
 }
 
+fn with_client_auth(
+  builder: rustls::ConfigBuilder<rustls::ClientConfig, rustls::client::WantsClientCert>,
+  config: &ConnectionConfig,
+) -> Result<rustls::ClientConfig, MqttError> {
+  match parse_client_cert_key(config)? {
+    Some((certs, key)) => builder
+      .with_client_auth_cert(certs, key)
+      .map_err(|e| MqttError::TlsError(e.to_string())),
+    None => Ok(builder.with_no_client_auth()),
+  }
+}
+
 fn parse_client_cert_key(
   config: &ConnectionConfig,
-) -> Result<Option<(Vec<CertificateDer<'static>>, rustls::pki_types::PrivateKeyDer<'static>)>, MqttError> {
+) -> Result<Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>, MqttError> {
   match (&config.client_certificate, &config.client_key) {
     (Some(client_cert), Some(client_key)) => {
-      let mut cert_reader = BufReader::new(client_cert.as_slice());
-      let certs: Vec<_> = rustls_pemfile::certs(&mut cert_reader)
+      let certs: Vec<_> = CertificateDer::pem_slice_iter(client_cert)
         .filter_map(|r| match r {
           Ok(cert) => Some(cert),
           Err(e) => {
@@ -76,10 +74,10 @@ fn parse_client_cert_key(
         })
         .collect();
 
-      let mut key_reader = BufReader::new(client_key.as_slice());
-      let key = rustls_pemfile::private_key(&mut key_reader)
-        .map_err(|e| MqttError::TlsError(e.to_string()))?
-        .ok_or_else(|| MqttError::TlsError("No private key found".to_string()))?;
+      let key = PrivateKeyDer::from_pem_slice(client_key).map_err(|e| match e {
+        rustls::pki_types::pem::Error::NoItemsFound => MqttError::TlsError("No private key found".to_string()),
+        e => MqttError::TlsError(e.to_string()),
+      })?;
 
       Ok(Some((certs, key)))
     }

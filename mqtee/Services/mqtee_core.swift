@@ -39,6 +39,52 @@ fileprivate extension ForeignBytes {
     init(bufferPointer: UnsafeBufferPointer<UInt8>) {
         self.init(len: Int32(bufferPointer.count), data: bufferPointer.baseAddress)
     }
+
+    init(rawBufferPointer: UnsafeRawBufferPointer) {
+        self.init(
+            len: Int32(rawBufferPointer.count),
+            data: rawBufferPointer.baseAddress?.assumingMemoryBound(to: UInt8.self)
+        )
+    }
+}
+
+// Converter for `&[u8]` / `[ByRef] bytes` arguments.
+//
+// Conforms to `FfiConverter` so the compiler enforces the full converter
+// method set. Only the scope-bound `lower(_:_body:)` overload is sound —
+// zero-copy byte buffers only flow foreign -> Rust, and only in argument
+// position. The four protocol-witness methods (`lift`, `lower`, `read`,
+// `write`) `fatalError` at runtime if anyone reaches them.
+//
+// The scope-bound `lower` takes a closure because the `ForeignBytes`
+// pointer is only guaranteed valid for the duration of
+// `Data.withUnsafeBytes`. Callers must run the full FFI call inside
+// the closure body.
+fileprivate enum FfiConverterByRefBytes: FfiConverter {
+    typealias SwiftType = Data
+    typealias FfiType = ForeignBytes
+
+    static func lower<R>(_ value: Data, _ body: (ForeignBytes) throws -> R) rethrows -> R {
+        return try value.withUnsafeBytes { rawBuf in
+            try body(ForeignBytes(rawBufferPointer: rawBuf))
+        }
+    }
+
+    static func lower(_ value: Data) -> ForeignBytes {
+        fatalError("ByRef bytes cannot use the plain lower: returning ForeignBytes escapes the Data.withUnsafeBytes scope. Use the scope-bound lower(_:_body:) overload instead.")
+    }
+
+    static func lift(_ value: ForeignBytes) throws -> Data {
+        fatalError("ByRef bytes cannot be lifted: zero-copy &[u8] only flows foreign->Rust")
+    }
+
+    static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Data {
+        fatalError("ByRef bytes cannot be read from a buffer: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
+    }
+
+    static func write(_ value: Data, into buf: inout [UInt8]) {
+        fatalError("ByRef bytes cannot be written to a buffer: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
+    }
 }
 
 // For every type used in the interface, we provide helper methods for conveniently
@@ -281,7 +327,7 @@ private func makeRustCall<T, E: Swift.Error>(
     _ callback: (UnsafeMutablePointer<RustCallStatus>) -> T,
     errorHandler: ((RustBuffer) throws -> E)?
 ) throws -> T {
-    uniffiEnsureInitialized()
+    uniffiEnsureMqteeCoreInitialized()
     var callStatus = RustCallStatus.init()
     let returnedVal = callback(&callStatus)
     try uniffiCheckCallStatus(callStatus: callStatus, errorHandler: errorHandler)
@@ -352,18 +398,29 @@ private func uniffiTraitInterfaceCallWithError<T, E>(
         callStatus.pointee.errorBuf = FfiConverterString.lower(String(describing: error))
     }
 }
-fileprivate class UniffiHandleMap<T> {
-    private var map: [UInt64: T] = [:]
+// Initial value and increment amount for handles. 
+// These ensure that SWIFT handles always have the lowest bit set
+fileprivate let UNIFFI_HANDLEMAP_INITIAL: UInt64 = 1
+fileprivate let UNIFFI_HANDLEMAP_DELTA: UInt64 = 2
+
+fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
+    // All mutation happens with this lock held, which is why we implement @unchecked Sendable.
     private let lock = NSLock()
-    private var currentHandle: UInt64 = 1
+    private var map: [UInt64: T] = [:]
+    private var currentHandle: UInt64 = UNIFFI_HANDLEMAP_INITIAL
 
     func insert(obj: T) -> UInt64 {
         lock.withLock {
-            let handle = currentHandle
-            currentHandle += 1
-            map[handle] = obj
-            return handle
+            return doInsert(obj)
         }
+    }
+
+    // Low-level insert function, this assumes `lock` is held.
+    private func doInsert(_ obj: T) -> UInt64 {
+        let handle = currentHandle
+        currentHandle += UNIFFI_HANDLEMAP_DELTA
+        map[handle] = obj
+        return handle
     }
 
      func get(handle: UInt64) throws -> T {
@@ -372,6 +429,15 @@ fileprivate class UniffiHandleMap<T> {
                 throw UniffiInternalError.unexpectedStaleHandle
             }
             return obj
+        }
+    }
+
+     func clone(handle: UInt64) throws -> UInt64 {
+        try lock.withLock {
+            guard let obj = map[handle] else {
+                throw UniffiInternalError.unexpectedStaleHandle
+            }
+            return doInsert(obj)
         }
     }
 
@@ -394,7 +460,13 @@ fileprivate class UniffiHandleMap<T> {
 
 
 // Public interface members begin here.
-
+// Magic number for the Rust proxy to call using the same mechanism as every other method,
+// to free the callback once it's dropped by Rust.
+private let IDX_CALLBACK_FREE: Int32 = 0
+// Callback return codes
+private let UNIFFI_CALLBACK_SUCCESS: Int32 = 0
+private let UNIFFI_CALLBACK_ERROR: Int32 = 1
+private let UNIFFI_CALLBACK_UNEXPECTED_ERROR: Int32 = 2
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -499,7 +571,11 @@ fileprivate struct FfiConverterString: FfiConverter {
             return String()
         }
         let bytes = UnsafeBufferPointer<UInt8>(start: value.data!, count: Int(value.len))
-        return String(bytes: bytes, encoding: String.Encoding.utf8)!
+        // Use Swift's native UTF-8 decoder; `String(bytes:encoding:.utf8)` goes
+        // through Foundation's NSString and silently strips a leading U+FEFF BOM.
+        // Invalid UTF-8 substitutes U+FFFD instead of trapping (unreachable
+        // given Rust's `String` invariant).
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     public static func lower(_ value: String) -> RustBuffer {
@@ -515,7 +591,8 @@ fileprivate struct FfiConverterString: FfiConverter {
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> String {
         let len: Int32 = try readInt(&buf)
-        return String(bytes: try readBytes(&buf, count: Int(len)), encoding: String.Encoding.utf8)!
+        // See `lift` above for why we avoid Foundation's NSString-backed decoder here.
+        return String(decoding: try readBytes(&buf, count: Int(len)), as: UTF8.self)
     }
 
     public static func write(_ value: String, into buf: inout [UInt8]) {
@@ -546,7 +623,7 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 
 
 
-public protocol MqttClientProtocol : AnyObject {
+public protocol MqttClientProtocol: AnyObject, Sendable {
     
     func connect() throws 
     
@@ -554,6 +631,9 @@ public protocol MqttClientProtocol : AnyObject {
     
     func isConnected()  -> Bool
     
+    /**
+     * `payload` borrows the caller's buffer across the FFI without a copy.
+     */
     func publish(topic: String, payload: Data, qos: QosLevel, retain: Bool, contentType: String?, responseTopic: String?, correlationData: Data?, messageExpiryInterval: UInt32?, payloadFormatIndicator: UInt8?, userProperties: [UserProperty]) throws 
     
     func subscribe(subscriptions: [SubscriptionRequest]) throws 
@@ -561,171 +641,184 @@ public protocol MqttClientProtocol : AnyObject {
     func unsubscribe(topics: [String]) throws 
     
 }
+open class MqttClient: MqttClientProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
 
-open class MqttClient:
-    MqttClientProtocol {
-    fileprivate let pointer: UnsafeMutableRawPointer!
-
-    /// Used to instantiate a [FFIObject] without an actual pointer, for fakes in tests, mostly.
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    public struct NoPointer {
+    public struct NoHandle {
         public init() {}
     }
 
     // TODO: We'd like this to be `private` but for Swifty reasons,
     // we can't implement `FfiConverter` without making this `required` and we can't
     // make it `required` without making it `public`.
-    required public init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
-        self.pointer = pointer
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
     }
 
     // This constructor can be used to instantiate a fake object.
-    // - Parameter noPointer: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
     //
     // - Warning:
-    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing [Pointer] the FFI lower functions will crash.
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    public init(noPointer: NoPointer) {
-        self.pointer = nil
+    public init(noHandle: NoHandle) {
+        self.handle = 0
     }
 
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    public func uniffiClonePointer() -> UnsafeMutableRawPointer {
-        return try! rustCall { uniffi_mqtee_core_fn_clone_mqttclient(self.pointer, $0) }
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_mqtee_core_fn_clone_mqttclient(self.handle, $0) }
     }
 public convenience init(config: ConnectionConfig, handler: MqttEventHandler)throws  {
-    let pointer =
-        try rustCallWithError(FfiConverterTypeMqttError.lift) {
+    let handle =
+        try rustCallWithError(FfiConverterTypeMqttError_lift) {
+        uniffiCallStatus in
     uniffi_mqtee_core_fn_constructor_mqttclient_new(
-        FfiConverterTypeConnectionConfig.lower(config),
-        FfiConverterCallbackInterfaceMqttEventHandler.lower(handler),$0
+        FfiConverterTypeConnectionConfig_lower(config),
+        FfiConverterCallbackInterfaceMqttEventHandler_lower(handler),uniffiCallStatus
     )
 }
-    self.init(unsafeFromRawPointer: pointer)
+    self.init(unsafeFromHandle: handle)
 }
 
     deinit {
-        guard let pointer = pointer else {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
             return
         }
 
-        try! rustCall { uniffi_mqtee_core_fn_free_mqttclient(pointer, $0) }
+        try! rustCall { uniffi_mqtee_core_fn_free_mqttclient(handle, $0) }
     }
 
     
 
     
-open func connect()throws  {try rustCallWithError(FfiConverterTypeMqttError.lift) {
-    uniffi_mqtee_core_fn_method_mqttclient_connect(self.uniffiClonePointer(),$0
+open func connect()throws   {try rustCallWithError(FfiConverterTypeMqttError_lift) {
+        uniffiCallStatus in
+    uniffi_mqtee_core_fn_method_mqttclient_connect(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
 }
     
-open func disconnect()throws  {try rustCallWithError(FfiConverterTypeMqttError.lift) {
-    uniffi_mqtee_core_fn_method_mqttclient_disconnect(self.uniffiClonePointer(),$0
+open func disconnect()throws   {try rustCallWithError(FfiConverterTypeMqttError_lift) {
+        uniffiCallStatus in
+    uniffi_mqtee_core_fn_method_mqttclient_disconnect(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
 }
     
-open func isConnected() -> Bool {
+open func isConnected() -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
-    uniffi_mqtee_core_fn_method_mqttclient_is_connected(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_mqtee_core_fn_method_mqttclient_is_connected(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
-open func publish(topic: String, payload: Data, qos: QosLevel, retain: Bool, contentType: String?, responseTopic: String?, correlationData: Data?, messageExpiryInterval: UInt32?, payloadFormatIndicator: UInt8?, userProperties: [UserProperty])throws  {try rustCallWithError(FfiConverterTypeMqttError.lift) {
-    uniffi_mqtee_core_fn_method_mqttclient_publish(self.uniffiClonePointer(),
+    /**
+     * `payload` borrows the caller's buffer across the FFI without a copy.
+     */
+open func publish(topic: String, payload: Data, qos: QosLevel, retain: Bool, contentType: String?, responseTopic: String?, correlationData: Data?, messageExpiryInterval: UInt32?, payloadFormatIndicator: UInt8?, userProperties: [UserProperty])throws   {try rustCallWithError(FfiConverterTypeMqttError_lift) {
+        uniffiCallStatus in
+        FfiConverterByRefBytes.lower(payload) { payloadFb in
+    uniffi_mqtee_core_fn_method_mqttclient_publish(
+            self.uniffiCloneHandle(),
         FfiConverterString.lower(topic),
-        FfiConverterData.lower(payload),
-        FfiConverterTypeQosLevel.lower(qos),
+        payloadFb,
+        FfiConverterTypeQosLevel_lower(qos),
         FfiConverterBool.lower(retain),
         FfiConverterOptionString.lower(contentType),
         FfiConverterOptionString.lower(responseTopic),
         FfiConverterOptionData.lower(correlationData),
         FfiConverterOptionUInt32.lower(messageExpiryInterval),
         FfiConverterOptionUInt8.lower(payloadFormatIndicator),
-        FfiConverterSequenceTypeUserProperty.lower(userProperties),$0
+        FfiConverterSequenceTypeUserProperty.lower(userProperties),uniffiCallStatus
+    )
+        }
+}
+}
+    
+open func subscribe(subscriptions: [SubscriptionRequest])throws   {try rustCallWithError(FfiConverterTypeMqttError_lift) {
+        uniffiCallStatus in
+    uniffi_mqtee_core_fn_method_mqttclient_subscribe(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeSubscriptionRequest.lower(subscriptions),uniffiCallStatus
     )
 }
 }
     
-open func subscribe(subscriptions: [SubscriptionRequest])throws  {try rustCallWithError(FfiConverterTypeMqttError.lift) {
-    uniffi_mqtee_core_fn_method_mqttclient_subscribe(self.uniffiClonePointer(),
-        FfiConverterSequenceTypeSubscriptionRequest.lower(subscriptions),$0
-    )
-}
-}
-    
-open func unsubscribe(topics: [String])throws  {try rustCallWithError(FfiConverterTypeMqttError.lift) {
-    uniffi_mqtee_core_fn_method_mqttclient_unsubscribe(self.uniffiClonePointer(),
-        FfiConverterSequenceString.lower(topics),$0
+open func unsubscribe(topics: [String])throws   {try rustCallWithError(FfiConverterTypeMqttError_lift) {
+        uniffiCallStatus in
+    uniffi_mqtee_core_fn_method_mqttclient_unsubscribe(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceString.lower(topics),uniffiCallStatus
     )
 }
 }
     
 
+    
 }
+
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
 public struct FfiConverterTypeMqttClient: FfiConverter {
-
-    typealias FfiType = UnsafeMutableRawPointer
+    typealias FfiType = UInt64
     typealias SwiftType = MqttClient
 
-    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> MqttClient {
-        return MqttClient(unsafeFromRawPointer: pointer)
+    public static func lift(_ handle: UInt64) throws -> MqttClient {
+        return MqttClient(unsafeFromHandle: handle)
     }
 
-    public static func lower(_ value: MqttClient) -> UnsafeMutableRawPointer {
-        return value.uniffiClonePointer()
+    public static func lower(_ value: MqttClient) -> UInt64 {
+        return value.uniffiCloneHandle()
     }
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MqttClient {
-        let v: UInt64 = try readInt(&buf)
-        // The Rust code won't compile if a pointer won't fit in a UInt64.
-        // We have to go via `UInt` because that's the thing that's the size of a pointer.
-        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
-        if (ptr == nil) {
-            throw UniffiInternalError.unexpectedNullPointer
-        }
-        return try lift(ptr!)
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
     }
 
     public static func write(_ value: MqttClient, into buf: inout [UInt8]) {
-        // This fiddling is because `Int` is the thing that's the same size as a pointer.
-        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
-        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+        writeInt(&buf, lower(value))
     }
 }
 
 
-
-
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeMqttClient_lift(_ pointer: UnsafeMutableRawPointer) throws -> MqttClient {
-    return try FfiConverterTypeMqttClient.lift(pointer)
+public func FfiConverterTypeMqttClient_lift(_ handle: UInt64) throws -> MqttClient {
+    return try FfiConverterTypeMqttClient.lift(handle)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeMqttClient_lower(_ value: MqttClient) -> UnsafeMutableRawPointer {
+public func FfiConverterTypeMqttClient_lower(_ value: MqttClient) -> UInt64 {
     return FfiConverterTypeMqttClient.lower(value)
 }
 
 
-public struct ConnectionConfig {
+
+
+public struct ConnectionConfig: Equatable, Hashable {
     public var clientId: String
     public var host: String
     public var port: UInt16
@@ -763,83 +856,15 @@ public struct ConnectionConfig {
         self.sessionExpiryInterval = sessionExpiryInterval
         self.maxPacketSize = maxPacketSize
     }
+
+    
+
+    
 }
 
-
-
-extension ConnectionConfig: Equatable, Hashable {
-    public static func ==(lhs: ConnectionConfig, rhs: ConnectionConfig) -> Bool {
-        if lhs.clientId != rhs.clientId {
-            return false
-        }
-        if lhs.host != rhs.host {
-            return false
-        }
-        if lhs.port != rhs.port {
-            return false
-        }
-        if lhs.mqttVersion != rhs.mqttVersion {
-            return false
-        }
-        if lhs.cleanSession != rhs.cleanSession {
-            return false
-        }
-        if lhs.keepAliveSecs != rhs.keepAliveSecs {
-            return false
-        }
-        if lhs.username != rhs.username {
-            return false
-        }
-        if lhs.password != rhs.password {
-            return false
-        }
-        if lhs.useTls != rhs.useTls {
-            return false
-        }
-        if lhs.allowInsecureTls != rhs.allowInsecureTls {
-            return false
-        }
-        if lhs.caCertificate != rhs.caCertificate {
-            return false
-        }
-        if lhs.clientCertificate != rhs.clientCertificate {
-            return false
-        }
-        if lhs.clientKey != rhs.clientKey {
-            return false
-        }
-        if lhs.lastWill != rhs.lastWill {
-            return false
-        }
-        if lhs.sessionExpiryInterval != rhs.sessionExpiryInterval {
-            return false
-        }
-        if lhs.maxPacketSize != rhs.maxPacketSize {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(clientId)
-        hasher.combine(host)
-        hasher.combine(port)
-        hasher.combine(mqttVersion)
-        hasher.combine(cleanSession)
-        hasher.combine(keepAliveSecs)
-        hasher.combine(username)
-        hasher.combine(password)
-        hasher.combine(useTls)
-        hasher.combine(allowInsecureTls)
-        hasher.combine(caCertificate)
-        hasher.combine(clientCertificate)
-        hasher.combine(clientKey)
-        hasher.combine(lastWill)
-        hasher.combine(sessionExpiryInterval)
-        hasher.combine(maxPacketSize)
-    }
-}
-
+#if compiler(>=6)
+extension ConnectionConfig: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -903,7 +928,7 @@ public func FfiConverterTypeConnectionConfig_lower(_ value: ConnectionConfig) ->
 }
 
 
-public struct LastWillConfig {
+public struct LastWillConfig: Equatable, Hashable {
     public var topic: String
     public var message: String
     public var qos: QosLevel
@@ -917,35 +942,15 @@ public struct LastWillConfig {
         self.qos = qos
         self.retain = retain
     }
+
+    
+
+    
 }
 
-
-
-extension LastWillConfig: Equatable, Hashable {
-    public static func ==(lhs: LastWillConfig, rhs: LastWillConfig) -> Bool {
-        if lhs.topic != rhs.topic {
-            return false
-        }
-        if lhs.message != rhs.message {
-            return false
-        }
-        if lhs.qos != rhs.qos {
-            return false
-        }
-        if lhs.retain != rhs.retain {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(topic)
-        hasher.combine(message)
-        hasher.combine(qos)
-        hasher.combine(retain)
-    }
-}
-
+#if compiler(>=6)
+extension LastWillConfig: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -985,7 +990,7 @@ public func FfiConverterTypeLastWillConfig_lower(_ value: LastWillConfig) -> Rus
 }
 
 
-public struct MqttMessage {
+public struct MqttMessage: Equatable, Hashable {
     public var topic: String
     public var payload: Data
     public var qos: QosLevel
@@ -1013,63 +1018,15 @@ public struct MqttMessage {
         self.payloadFormatIndicator = payloadFormatIndicator
         self.messageExpiryInterval = messageExpiryInterval
     }
+
+    
+
+    
 }
 
-
-
-extension MqttMessage: Equatable, Hashable {
-    public static func ==(lhs: MqttMessage, rhs: MqttMessage) -> Bool {
-        if lhs.topic != rhs.topic {
-            return false
-        }
-        if lhs.payload != rhs.payload {
-            return false
-        }
-        if lhs.qos != rhs.qos {
-            return false
-        }
-        if lhs.retain != rhs.retain {
-            return false
-        }
-        if lhs.timestampMs != rhs.timestampMs {
-            return false
-        }
-        if lhs.contentType != rhs.contentType {
-            return false
-        }
-        if lhs.responseTopic != rhs.responseTopic {
-            return false
-        }
-        if lhs.correlationData != rhs.correlationData {
-            return false
-        }
-        if lhs.userProperties != rhs.userProperties {
-            return false
-        }
-        if lhs.payloadFormatIndicator != rhs.payloadFormatIndicator {
-            return false
-        }
-        if lhs.messageExpiryInterval != rhs.messageExpiryInterval {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(topic)
-        hasher.combine(payload)
-        hasher.combine(qos)
-        hasher.combine(retain)
-        hasher.combine(timestampMs)
-        hasher.combine(contentType)
-        hasher.combine(responseTopic)
-        hasher.combine(correlationData)
-        hasher.combine(userProperties)
-        hasher.combine(payloadFormatIndicator)
-        hasher.combine(messageExpiryInterval)
-    }
-}
-
+#if compiler(>=6)
+extension MqttMessage: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1123,7 +1080,7 @@ public func FfiConverterTypeMqttMessage_lower(_ value: MqttMessage) -> RustBuffe
 }
 
 
-public struct SubscriptionRequest {
+public struct SubscriptionRequest: Equatable, Hashable {
     public var topic: String
     public var qos: QosLevel
     public var noLocal: Bool
@@ -1139,39 +1096,15 @@ public struct SubscriptionRequest {
         self.retainAsPublished = retainAsPublished
         self.retainHandling = retainHandling
     }
+
+    
+
+    
 }
 
-
-
-extension SubscriptionRequest: Equatable, Hashable {
-    public static func ==(lhs: SubscriptionRequest, rhs: SubscriptionRequest) -> Bool {
-        if lhs.topic != rhs.topic {
-            return false
-        }
-        if lhs.qos != rhs.qos {
-            return false
-        }
-        if lhs.noLocal != rhs.noLocal {
-            return false
-        }
-        if lhs.retainAsPublished != rhs.retainAsPublished {
-            return false
-        }
-        if lhs.retainHandling != rhs.retainHandling {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(topic)
-        hasher.combine(qos)
-        hasher.combine(noLocal)
-        hasher.combine(retainAsPublished)
-        hasher.combine(retainHandling)
-    }
-}
-
+#if compiler(>=6)
+extension SubscriptionRequest: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1213,7 +1146,7 @@ public func FfiConverterTypeSubscriptionRequest_lower(_ value: SubscriptionReque
 }
 
 
-public struct UserProperty {
+public struct UserProperty: Equatable, Hashable {
     public var key: String
     public var value: String
 
@@ -1223,27 +1156,15 @@ public struct UserProperty {
         self.key = key
         self.value = value
     }
+
+    
+
+    
 }
 
-
-
-extension UserProperty: Equatable, Hashable {
-    public static func ==(lhs: UserProperty, rhs: UserProperty) -> Bool {
-        if lhs.key != rhs.key {
-            return false
-        }
-        if lhs.value != rhs.value {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(key)
-        hasher.combine(value)
-    }
-}
-
+#if compiler(>=6)
+extension UserProperty: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1278,10 +1199,9 @@ public func FfiConverterTypeUserProperty_lower(_ value: UserProperty) -> RustBuf
     return FfiConverterTypeUserProperty.lower(value)
 }
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 
-public enum ConnectionEvent {
+
+public enum ConnectionEvent: Equatable, Hashable {
     
     case connected
     case disconnected(reason: String, reasonCode: String?
@@ -1319,8 +1239,16 @@ public enum ConnectionEvent {
     )
     case pingSent
     case disconnectSent
+
+
+
+
+
 }
 
+#if compiler(>=6)
+extension ConnectionEvent: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1525,12 +1453,8 @@ public func FfiConverterTypeConnectionEvent_lower(_ value: ConnectionEvent) -> R
 
 
 
-extension ConnectionEvent: Equatable, Hashable {}
-
-
-
-
-public enum MqttError {
+public 
+enum MqttError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
     
     
@@ -1543,8 +1467,21 @@ public enum MqttError {
     )
     case InternalError(String
     )
+
+    
+
+    
+
+    
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+    
 }
 
+#if compiler(>=6)
+extension MqttError: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1612,23 +1549,36 @@ public struct FfiConverterTypeMqttError: FfiConverterRustBuffer {
 }
 
 
-extension MqttError: Equatable, Hashable {}
-
-extension MqttError: Foundation.LocalizedError {
-    public var errorDescription: String? {
-        String(reflecting: self)
-    }
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMqttError_lift(_ buf: RustBuffer) throws -> MqttError {
+    return try FfiConverterTypeMqttError.lift(buf)
 }
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMqttError_lower(_ value: MqttError) -> RustBuffer {
+    return FfiConverterTypeMqttError.lower(value)
+}
 
-public enum MqttVersion {
+
+
+public enum MqttVersion: Equatable, Hashable {
     
     case v311
     case v5
+
+
+
+
+
 }
 
+#if compiler(>=6)
+extension MqttVersion: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1680,20 +1630,22 @@ public func FfiConverterTypeMqttVersion_lower(_ value: MqttVersion) -> RustBuffe
 
 
 
-extension MqttVersion: Equatable, Hashable {}
 
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-
-public enum QosLevel {
+public enum QosLevel: Equatable, Hashable {
     
     case atMostOnce
     case atLeastOnce
     case exactlyOnce
+
+
+
+
+
 }
 
+#if compiler(>=6)
+extension QosLevel: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1751,33 +1703,37 @@ public func FfiConverterTypeQosLevel_lower(_ value: QosLevel) -> RustBuffer {
 
 
 
-extension QosLevel: Equatable, Hashable {}
 
 
-
-
-
-
-public protocol MqttEventHandler : AnyObject {
+public protocol MqttEventHandler: AnyObject, Sendable {
     
     func onEvent(event: ConnectionEvent) 
     
 }
 
-// Magic number for the Rust proxy to call using the same mechanism as every other method,
-// to free the callback once it's dropped by Rust.
-private let IDX_CALLBACK_FREE: Int32 = 0
-// Callback return codes
-private let UNIFFI_CALLBACK_SUCCESS: Int32 = 0
-private let UNIFFI_CALLBACK_ERROR: Int32 = 1
-private let UNIFFI_CALLBACK_UNEXPECTED_ERROR: Int32 = 2
 
 // Put the implementation in a struct so we don't pollute the top-level namespace
 fileprivate struct UniffiCallbackInterfaceMqttEventHandler {
 
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
-    static var vtable: UniffiVTableCallbackInterfaceMqttEventHandler = UniffiVTableCallbackInterfaceMqttEventHandler(
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceMqttEventHandler = UniffiVTableCallbackInterfaceMqttEventHandler(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterCallbackInterfaceMqttEventHandler.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface MqttEventHandler: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterCallbackInterfaceMqttEventHandler.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface MqttEventHandler: handle missing in uniffiClone")
+            }
+        },
         onEvent: { (
             uniffiHandle: UInt64,
             event: RustBuffer,
@@ -1790,7 +1746,7 @@ fileprivate struct UniffiCallbackInterfaceMqttEventHandler {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return uniffiObj.onEvent(
-                     event: try FfiConverterTypeConnectionEvent.lift(event)
+                     event: try FfiConverterTypeConnectionEvent_lift(event)
                 )
             }
 
@@ -1801,18 +1757,24 @@ fileprivate struct UniffiCallbackInterfaceMqttEventHandler {
                 makeCall: makeCall,
                 writeReturn: writeReturn
             )
-        },
-        uniffiFree: { (uniffiHandle: UInt64) -> () in
-            let result = try? FfiConverterCallbackInterfaceMqttEventHandler.handleMap.remove(handle: uniffiHandle)
-            if result == nil {
-                print("Uniffi callback interface MqttEventHandler: handle missing in uniffiFree")
-            }
         }
     )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceMqttEventHandler> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceMqttEventHandler>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitMqttEventHandler() {
-    uniffi_mqtee_core_fn_init_callback_vtable_mqtteventhandler(&UniffiCallbackInterfaceMqttEventHandler.vtable)
+    uniffi_mqtee_core_fn_init_callback_vtable_mqtteventhandler(UniffiCallbackInterfaceMqttEventHandler.vtablePtr)
 }
 
 // FfiConverter protocol for callback interfaces
@@ -1820,7 +1782,7 @@ private func uniffiCallbackInitMqttEventHandler() {
 @_documentation(visibility: private)
 #endif
 fileprivate struct FfiConverterCallbackInterfaceMqttEventHandler {
-    fileprivate static var handleMap = UniffiHandleMap<MqttEventHandler>()
+    fileprivate static let handleMap = UniffiHandleMap<MqttEventHandler>()
 }
 
 #if swift(>=5.8)
@@ -1858,6 +1820,21 @@ extension FfiConverterCallbackInterfaceMqttEventHandler : FfiConverter {
     public static func write(_ v: SwiftType, into buf: inout [UInt8]) {
         writeInt(&buf, lower(v))
     }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceMqttEventHandler_lift(_ handle: UInt64) throws -> MqttEventHandler {
+    return try FfiConverterCallbackInterfaceMqttEventHandler.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceMqttEventHandler_lower(_ v: MqttEventHandler) -> UInt64 {
+    return FfiConverterCallbackInterfaceMqttEventHandler.lower(v)
 }
 
 #if swift(>=5.8)
@@ -2102,8 +2079,9 @@ fileprivate struct FfiConverterSequenceTypeUserProperty: FfiConverterRustBuffer 
         return seq
     }
 }
-public func initLogging() {try! rustCall() {
-    uniffi_mqtee_core_fn_func_init_logging($0
+public func initLogging()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_mqtee_core_fn_func_init_logging(uniffiCallStatus
     )
 }
 }
@@ -2115,39 +2093,39 @@ private enum InitializationResult {
 }
 // Use a global variable to perform the versioning checks. Swift ensures that
 // the code inside is only computed once.
-private var initializationResult: InitializationResult = {
+private let initializationResult: InitializationResult = {
     // Get the bindings contract version from our ComponentInterface
-    let bindings_contract_version = 26
+    let bindings_contract_version = 30
     // Get the scaffolding contract version by calling the into the dylib
     let scaffolding_contract_version = ffi_mqtee_core_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_mqtee_core_checksum_func_init_logging() != 53613) {
+    if (uniffi_mqtee_core_checksum_func_init_logging() != 35599) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mqtee_core_checksum_method_mqttclient_connect() != 9689) {
+    if (uniffi_mqtee_core_checksum_method_mqttclient_connect() != 64164) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mqtee_core_checksum_method_mqttclient_disconnect() != 27825) {
+    if (uniffi_mqtee_core_checksum_method_mqttclient_disconnect() != 3729) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mqtee_core_checksum_method_mqttclient_is_connected() != 49865) {
+    if (uniffi_mqtee_core_checksum_method_mqttclient_is_connected() != 26518) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mqtee_core_checksum_method_mqttclient_publish() != 62394) {
+    if (uniffi_mqtee_core_checksum_method_mqttclient_publish() != 30668) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mqtee_core_checksum_method_mqttclient_subscribe() != 36192) {
+    if (uniffi_mqtee_core_checksum_method_mqttclient_subscribe() != 5214) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mqtee_core_checksum_method_mqttclient_unsubscribe() != 53685) {
+    if (uniffi_mqtee_core_checksum_method_mqttclient_unsubscribe() != 36446) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mqtee_core_checksum_constructor_mqttclient_new() != 56321) {
+    if (uniffi_mqtee_core_checksum_constructor_mqttclient_new() != 41116) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mqtee_core_checksum_method_mqtteventhandler_on_event() != 61249) {
+    if (uniffi_mqtee_core_checksum_method_mqtteventhandler_on_event() != 17497) {
         return InitializationResult.apiChecksumMismatch
     }
 
@@ -2155,7 +2133,9 @@ private var initializationResult: InitializationResult = {
     return InitializationResult.ok
 }()
 
-private func uniffiEnsureInitialized() {
+// Make the ensure init function public so that other modules which have external type references to
+// our types can call it.
+public func uniffiEnsureMqteeCoreInitialized() {
     switch initializationResult {
     case .ok:
         break

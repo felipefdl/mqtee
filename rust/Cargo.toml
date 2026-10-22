@@ -2,7 +2,7 @@
 name = "mqtee-core"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.87"
 license = "Apache-2.0"
 authors = ["Felipe Lima <felipefdl@mqtee.app>"]
 
@@ -24,13 +24,13 @@ required-features = ["test-broker"]
 
 [dependencies]
 # MQTT client (v5 module for MQTT 5.0 support)
-rumqttc = { version = "0.25", features = ["use-rustls"] }
+rumqttc = { version = "0.25.1", features = ["use-rustls"] }
 
 # Async runtime
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+tokio = { version = "1.54", features = ["rt-multi-thread", "sync", "time", "macros"] }
 
 # UniFFI for Swift bindings
-uniffi = { version = "0.28", features = ["cli"] }
+uniffi = { version = "0.32", features = ["cli"] }
 
 # Error handling
 thiserror = "2"
@@ -42,20 +42,19 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Test broker (optional, only for integration tests)
 rumqttd = { version = "0.20", optional = true }
 
-# TLS
-rustls = "0.23"
-rustls-pemfile = "2"
-webpki-roots = "0.26"
+# TLS (PEM parsing lives in rustls::pki_types; server trust uses the OS trust store)
+rustls = "0.23.46"
+rustls-platform-verifier = "0.7"
 
 [dev-dependencies]
-criterion = "0.5"
+criterion = "0.8"
 
 [[bench]]
 name = "mqtt_benchmarks"
 harness = false
 
 [build-dependencies]
-uniffi = { version = "0.28", features = ["build"] }
+uniffi = { version = "0.32", features = ["build"] }
 
 [profile.release]
 lto = true

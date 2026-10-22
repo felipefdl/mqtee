@@ -33,6 +33,8 @@ pub(super) fn create_v5_client(config: &ConnectionConfig, max_packet_size: usize
     mqtt_options.set_transport(rumqttc::Transport::Tls(tls_config));
   }
 
+  mqtt_options.set_network_options(super::interactive_network_options());
+
   let (client, eventloop) = rumqttc::v5::AsyncClient::new(mqtt_options, 100);
   Ok(ClientInner::V5 {
     client,

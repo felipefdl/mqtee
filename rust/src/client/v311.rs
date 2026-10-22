@@ -31,7 +31,8 @@ pub(super) fn create_v311_client(config: &ConnectionConfig, max_packet_size: usi
     mqtt_options.set_transport(rumqttc::Transport::Tls(tls_config));
   }
 
-  let (client, eventloop) = rumqttc::AsyncClient::new(mqtt_options, 100);
+  let (client, mut eventloop) = rumqttc::AsyncClient::new(mqtt_options, 100);
+  eventloop.set_network_options(super::interactive_network_options());
   Ok(ClientInner::V311 {
     client,
     eventloop: Box::new(eventloop),

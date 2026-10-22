@@ -1,21 +1,33 @@
+mod commands;
 mod tls;
 mod v311;
 mod v5;
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock};
 
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 use crate::error::MqttError;
 use crate::types::{
   ConnectionConfig, ConnectionEvent, MqttEventHandler, MqttVersion, QosLevel, SubscriptionRequest, UserProperty,
 };
 
+use self::commands::{close_gracefully, handle_command};
 use self::v5::{create_v5_client, handle_v5_event};
 use self::v311::{create_v311_client, handle_v311_event};
+
+/// One small runtime shared by every client. A per-client multi-thread runtime spawned a worker
+/// per CPU core for each connection, test connection, and Shortcuts intent.
+static RUNTIME: LazyLock<std::io::Result<Runtime>> = LazyLock::new(|| {
+  tokio::runtime::Builder::new_multi_thread()
+    .worker_threads(2)
+    .thread_name("mqtee-core")
+    .enable_all()
+    .build()
+});
 
 pub enum Command {
   Connect,
@@ -51,75 +63,48 @@ enum ClientInner {
 pub struct MqttClient {
   command_tx: mpsc::Sender<Command>,
   connected: Arc<AtomicBool>,
-  runtime: Runtime,
 }
 
 #[uniffi::export]
 impl MqttClient {
   #[uniffi::constructor]
   pub fn new(config: ConnectionConfig, handler: Box<dyn MqttEventHandler>) -> Result<Arc<Self>, MqttError> {
-    let runtime = Runtime::new().map_err(|e| MqttError::InternalError(e.to_string()))?;
+    let runtime = RUNTIME.as_ref().map_err(|e| MqttError::InternalError(e.to_string()))?;
 
     let handler: Arc<dyn MqttEventHandler> = Arc::from(handler);
     let (command_tx, command_rx) = mpsc::channel::<Command>(100);
     let connected = Arc::new(AtomicBool::new(false));
 
-    let connected_for_loop = connected.clone();
+    // The loop ends once this client is dropped and its queued commands are handled.
+    runtime.spawn(run_client_loop(config, handler, command_rx, connected.clone()));
 
-    let client = Arc::new(Self {
-      command_tx,
-      connected,
-      runtime,
-    });
-
-    client.runtime.spawn(async move {
-      run_client_loop(config, handler, command_rx, connected_for_loop).await;
-    });
-
-    Ok(client)
+    Ok(Arc::new(Self { command_tx, connected }))
   }
 
   pub fn connect(&self) -> Result<(), MqttError> {
-    self
-      .command_tx
-      .try_send(Command::Connect)
-      .map_err(|e| MqttError::InternalError(format!("Command channel error: {}", e)))
+    self.send(Command::Connect)
   }
 
   pub fn disconnect(&self) -> Result<(), MqttError> {
-    self
-      .command_tx
-      .try_send(Command::Disconnect)
-      .map_err(|e| MqttError::InternalError(format!("Command channel error: {}", e)))
+    self.send(Command::Disconnect)
   }
 
   pub fn subscribe(&self, subscriptions: Vec<SubscriptionRequest>) -> Result<(), MqttError> {
-    if !self.connected.load(Ordering::Acquire) {
-      return Err(MqttError::NotConnected);
-    }
-
-    self
-      .command_tx
-      .try_send(Command::Subscribe(subscriptions))
-      .map_err(|e| MqttError::InternalError(format!("Command channel error: {}", e)))
+    self.ensure_connected()?;
+    self.send(Command::Subscribe(subscriptions))
   }
 
   pub fn unsubscribe(&self, topics: Vec<String>) -> Result<(), MqttError> {
-    if !self.connected.load(Ordering::Acquire) {
-      return Err(MqttError::NotConnected);
-    }
-
-    self
-      .command_tx
-      .try_send(Command::Unsubscribe(topics))
-      .map_err(|e| MqttError::InternalError(format!("Command channel error: {}", e)))
+    self.ensure_connected()?;
+    self.send(Command::Unsubscribe(topics))
   }
 
+  /// `payload` borrows the caller's buffer across the FFI without a copy.
   #[allow(clippy::too_many_arguments)]
   pub fn publish(
     &self,
     topic: String,
-    payload: Vec<u8>,
+    payload: &[u8],
     qos: QosLevel,
     retain: bool,
     content_type: Option<String>,
@@ -129,29 +114,40 @@ impl MqttClient {
     payload_format_indicator: Option<u8>,
     user_properties: Vec<UserProperty>,
   ) -> Result<(), MqttError> {
-    if !self.connected.load(Ordering::Acquire) {
-      return Err(MqttError::NotConnected);
-    }
-
-    self
-      .command_tx
-      .try_send(Command::Publish {
-        topic,
-        payload,
-        qos,
-        retain,
-        content_type,
-        response_topic,
-        correlation_data,
-        message_expiry_interval,
-        payload_format_indicator,
-        user_properties,
-      })
-      .map_err(|e| MqttError::InternalError(format!("Command channel error: {}", e)))
+    self.ensure_connected()?;
+    self.send(Command::Publish {
+      topic,
+      payload: payload.to_vec(),
+      qos,
+      retain,
+      content_type,
+      response_topic,
+      correlation_data,
+      message_expiry_interval,
+      payload_format_indicator,
+      user_properties,
+    })
   }
 
   pub fn is_connected(&self) -> bool {
     self.connected.load(Ordering::Acquire)
+  }
+}
+
+impl MqttClient {
+  fn ensure_connected(&self) -> Result<(), MqttError> {
+    if self.connected.load(Ordering::Acquire) {
+      Ok(())
+    } else {
+      Err(MqttError::NotConnected)
+    }
+  }
+
+  fn send(&self, command: Command) -> Result<(), MqttError> {
+    self
+      .command_tx
+      .try_send(command)
+      .map_err(|e| MqttError::InternalError(format!("Command channel error: {}", e)))
   }
 }
 
@@ -168,34 +164,22 @@ async fn run_client_loop(
   let mut inner: Option<ClientInner> = None;
 
   loop {
-    // Drain pending commands without blocking
-    while let Ok(cmd) = command_rx.try_recv() {
-      handle_command(cmd, &mut inner, &connected, &handler, &config).await;
-    }
-
-    match &mut inner {
+    let cmd = match &mut inner {
       Some(ClientInner::V311 { eventloop, .. }) => {
         tokio::select! {
           biased;
 
-          Some(cmd) = command_rx.recv() => {
-            handle_command(cmd, &mut inner, &connected, &handler, &config).await;
-          }
+          cmd = command_rx.recv() => cmd,
 
           result = eventloop.poll() => {
             match result {
               Ok(event) => handle_v311_event(event, &handler, &connected),
               Err(e) => {
-                error!("Event loop error: {}", e);
-                connected.store(false, Ordering::Release);
-                handler.on_event(ConnectionEvent::Error { error: e.to_string() });
-                handler.on_event(ConnectionEvent::Disconnected {
-                  reason: e.to_string(),
-                  reason_code: None,
-                });
+                report_connection_lost(&e.to_string(), &handler, &connected);
                 inner = None;
               }
             }
+            continue;
           }
         }
       }
@@ -204,226 +188,48 @@ async fn run_client_loop(
         tokio::select! {
           biased;
 
-          Some(cmd) = command_rx.recv() => {
-            handle_command(cmd, &mut inner, &connected, &handler, &config).await;
-          }
+          cmd = command_rx.recv() => cmd,
 
           result = eventloop.poll() => {
             match result {
               Ok(event) => handle_v5_event(event, &handler, &connected),
               Err(e) => {
-                error!("Event loop error: {}", e);
-                connected.store(false, Ordering::Release);
-                handler.on_event(ConnectionEvent::Error { error: e.to_string() });
-                handler.on_event(ConnectionEvent::Disconnected {
-                  reason: e.to_string(),
-                  reason_code: None,
-                });
+                report_connection_lost(&e.to_string(), &handler, &connected);
                 inner = None;
               }
             }
+            continue;
           }
         }
       }
 
+      None => command_rx.recv().await,
+    };
+
+    match cmd {
+      Some(cmd) => handle_command(cmd, &mut inner, &connected, &handler, &config).await,
       None => {
-        if let Some(cmd) = command_rx.recv().await {
-          handle_command(cmd, &mut inner, &connected, &handler, &config).await;
-        } else {
-          break;
+        // Every sender is gone: the owning MqttClient was dropped.
+        if let Some(ci) = inner.take() {
+          close_gracefully(ci, &connected).await;
         }
+        debug!("Client dropped, event loop finished");
+        break;
       }
     }
   }
 }
 
-// ---------------------------------------------------------------------------
-// Command handling
-// ---------------------------------------------------------------------------
-
-async fn handle_command(
-  cmd: Command,
-  inner: &mut Option<ClientInner>,
-  connected: &Arc<AtomicBool>,
-  handler: &Arc<dyn MqttEventHandler + Send + Sync>,
-  config: &ConnectionConfig,
-) {
-  match cmd {
-    Command::Connect => {
-      if inner.is_some() {
-        return;
-      }
-      match create_client(config) {
-        Ok(ci) => {
-          *inner = Some(ci);
-          info!("MQTT client created, starting event loop");
-        }
-        Err(e) => {
-          error!("Failed to create MQTT client: {}", e);
-          handler.on_event(ConnectionEvent::Error { error: e.to_string() });
-        }
-      }
-    }
-
-    Command::Disconnect => match inner.take() {
-      Some(ClientInner::V311 { client, .. }) => {
-        let _ = client.disconnect().await;
-        connected.store(false, Ordering::Release);
-        handler.on_event(ConnectionEvent::Disconnected {
-          reason: "User requested disconnect".to_string(),
-          reason_code: None,
-        });
-        info!("Disconnected from MQTT broker");
-      }
-      Some(ClientInner::V5 { client, .. }) => {
-        let _ = client.disconnect().await;
-        connected.store(false, Ordering::Release);
-        handler.on_event(ConnectionEvent::Disconnected {
-          reason: "User requested disconnect".to_string(),
-          reason_code: None,
-        });
-        info!("Disconnected from MQTT broker");
-      }
-      None => {}
-    },
-
-    Command::Subscribe(subs) => match inner {
-      Some(ClientInner::V311 { client, .. }) => {
-        for sub in subs {
-          match client.subscribe(&sub.topic, sub.qos.into()).await {
-            Ok(_) => debug!("Subscribe request sent for {}", sub.topic),
-            Err(e) => {
-              error!("Failed to subscribe to {}: {}", sub.topic, e);
-              handler.on_event(ConnectionEvent::Error {
-                error: format!("Subscribe failed: {}", e),
-              });
-            }
-          }
-        }
-      }
-      Some(ClientInner::V5 { client, .. }) => {
-        use rumqttc::v5::mqttbytes::v5::{Filter, RetainForwardRule};
-
-        let filters: Vec<Filter> = subs
-          .into_iter()
-          .map(|sub| {
-            let mut filter = Filter::new(sub.topic, sub.qos.into());
-            filter.nolocal = sub.no_local;
-            filter.preserve_retain = sub.retain_as_published;
-            filter.retain_forward_rule = match sub.retain_handling {
-              1 => RetainForwardRule::OnNewSubscribe,
-              2 => RetainForwardRule::Never,
-              _ => RetainForwardRule::OnEverySubscribe,
-            };
-            filter
-          })
-          .collect();
-
-        match client.subscribe_many(filters).await {
-          Ok(_) => debug!("V5 subscribe request sent"),
-          Err(e) => {
-            error!("Failed to subscribe: {}", e);
-            handler.on_event(ConnectionEvent::Error {
-              error: format!("Subscribe failed: {}", e),
-            });
-          }
-        }
-      }
-      None => {}
-    },
-
-    Command::Unsubscribe(topics) => match inner {
-      Some(ClientInner::V311 { client, .. }) => {
-        for topic in topics {
-          match client.unsubscribe(&topic).await {
-            Ok(_) => debug!("Unsubscribed from {}", topic),
-            Err(e) => {
-              error!("Failed to unsubscribe from {}: {}", topic, e);
-              handler.on_event(ConnectionEvent::Error {
-                error: format!("Unsubscribe failed: {}", e),
-              });
-            }
-          }
-        }
-      }
-      Some(ClientInner::V5 { client, .. }) => {
-        for topic in topics {
-          match client.unsubscribe(&topic).await {
-            Ok(_) => debug!("Unsubscribed from {}", topic),
-            Err(e) => {
-              error!("Failed to unsubscribe from {}: {}", topic, e);
-              handler.on_event(ConnectionEvent::Error {
-                error: format!("Unsubscribe failed: {}", e),
-              });
-            }
-          }
-        }
-      }
-      None => {}
-    },
-
-    Command::Publish {
-      topic,
-      payload,
-      qos,
-      retain,
-      content_type,
-      response_topic,
-      correlation_data,
-      message_expiry_interval,
-      payload_format_indicator,
-      user_properties,
-    } => match inner {
-      Some(ClientInner::V311 { client, .. }) => match client.publish(&topic, qos.into(), retain, payload).await {
-        Ok(_) => debug!("Published to {}", topic),
-        Err(e) => {
-          error!("Failed to publish to {}: {}", topic, e);
-          handler.on_event(ConnectionEvent::Error {
-            error: format!("Publish failed: {}", e),
-          });
-        }
-      },
-      Some(ClientInner::V5 { client, .. }) => {
-        let has_props = content_type.is_some()
-          || response_topic.is_some()
-          || correlation_data.is_some()
-          || message_expiry_interval.is_some()
-          || payload_format_indicator.is_some()
-          || !user_properties.is_empty();
-
-        let result = if has_props {
-          use rumqttc::v5::mqttbytes::v5::PublishProperties;
-
-          let props = PublishProperties {
-            content_type,
-            response_topic,
-            correlation_data: correlation_data.map(Into::into),
-            message_expiry_interval,
-            payload_format_indicator,
-            user_properties: user_properties.into_iter().map(|p| (p.key, p.value)).collect(),
-            ..Default::default()
-          };
-
-          client
-            .publish_with_properties(&topic, qos.into(), retain, payload, props)
-            .await
-        } else {
-          client.publish(&topic, qos.into(), retain, payload).await
-        };
-
-        match result {
-          Ok(_) => debug!("Published to {}", topic),
-          Err(e) => {
-            error!("Failed to publish to {}: {}", topic, e);
-            handler.on_event(ConnectionEvent::Error {
-              error: format!("Publish failed: {}", e),
-            });
-          }
-        }
-      }
-      None => {}
-    },
-  }
+fn report_connection_lost(reason: &str, handler: &Arc<dyn MqttEventHandler + Send + Sync>, connected: &AtomicBool) {
+  error!("Event loop error: {}", reason);
+  connected.store(false, Ordering::Release);
+  handler.on_event(ConnectionEvent::Error {
+    error: reason.to_string(),
+  });
+  handler.on_event(ConnectionEvent::Disconnected {
+    reason: reason.to_string(),
+    reason_code: None,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -437,4 +243,12 @@ fn create_client(config: &ConnectionConfig) -> Result<ClientInner, MqttError> {
     MqttVersion::V311 => create_v311_client(config, max_packet_size),
     MqttVersion::V5 => create_v5_client(config, max_packet_size),
   }
+}
+
+/// Interactive client: send each packet immediately instead of letting Nagle's algorithm hold
+/// small publishes and acks back to coalesce them.
+fn interactive_network_options() -> rumqttc::NetworkOptions {
+  let mut options = rumqttc::NetworkOptions::new();
+  options.set_tcp_nodelay(true);
+  options
 }
